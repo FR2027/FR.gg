@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>FR.gg</title>
+    <title>FR.gg - Firebase Edition</title>
     <link rel="icon" type="image/jpeg" href="https://i.ibb.co/cXZ9bzt5/FR-gg.jpg">
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; touch-action: none; }
@@ -115,7 +115,8 @@
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-import { getDatabase, ref, set, onValue, onDisconnect, remove } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-rtdb.js";
+import { getAnalytics } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-analytics.js";
+import { getDatabase, ref, set, onValue, push, onDisconnect, remove } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-rtdb.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyCCzmZs22Omv_RPAW47QXyfJI05kItr7Bw",
@@ -124,10 +125,12 @@ const firebaseConfig = {
   storageBucket: "frgg-c5404.firebasestorage.app",
   messagingSenderId: "76341492532",
   appId: "1:76341492532:web:ebf177bbec9d97b5c00361",
+  measurementId: "G-F9309K5K32",
   databaseURL: "https://frgg-c5404-default-rtdb.asia-southeast1.firebasedatabase.app/"
 };
 
 const app = initializeApp(firebaseConfig);
+const analytics = getAnalytics(app);
 const db = getDatabase(app);
 
 const WORLD_SIZE = 3600;
@@ -178,61 +181,55 @@ function setStatus(msg) {
 }
 
 function startGame() {
-    try {
-        myName = sanitizeInput(document.getElementById('nickname').value);
-        currentServer = document.getElementById('server-select').value;
-        document.getElementById('start-btn').disabled = true;
-        setStatus("正在連線至 Firebase 分流伺服器...");
+    myName = sanitizeInput(document.getElementById('nickname').value);
+    currentServer = document.getElementById('server-select').value;
+    document.getElementById('start-btn').disabled = true;
+    setStatus("正在連線至 Firebase 分流伺服器...");
 
-        serverRef = ref(db, 'servers/' + currentServer);
-        stateRef = ref(db, `servers/${currentServer}/state`);
-        inputsRef = ref(db, `servers/${currentServer}/inputs`);
-        hostRef = ref(db, `servers/${currentServer}/host`);
+    serverRef = ref(db, 'servers/' + currentServer);
+    stateRef = ref(db, `servers/${currentServer}/state`);
+    inputsRef = ref(db, `servers/${currentServer}/inputs`);
+    hostRef = ref(db, `servers/${currentServer}/host`);
 
-        const myPlayerRef = ref(db, `servers/${currentServer}/state/players/${myId}`);
-        const myInputRef = ref(db, `servers/${currentServer}/inputs/${myId}`);
-        onDisconnect(myPlayerRef).remove();
-        onDisconnect(myInputRef).remove();
+    const myPlayerRef = ref(db, `servers/${currentServer}/state/players/${myId}`);
+    const myInputRef = ref(db, `servers/${currentServer}/inputs/${myId}`);
+    onDisconnect(myPlayerRef).remove();
+    onDisconnect(myInputRef).remove();
 
-        onValue(hostRef, (snapshot) => {
-            const currentHost = snapshot.val();
-            if (!currentHost) {
-                set(hostRef, myId);
-                onDisconnect(hostRef).remove();
-            } else if (currentHost === myId) {
-                if (!isHost) becomeHost();
-            } else {
-                isHost = false;
-                if (hostInterval) { clearInterval(hostInterval); hostInterval = null; }
-            }
-        });
+    onValue(hostRef, (snapshot) => {
+        const currentHost = snapshot.val();
+        if (!currentHost) {
+            set(hostRef, myId);
+            onDisconnect(hostRef).remove();
+        } else if (currentHost === myId) {
+            if (!isHost) becomeHost();
+        } else {
+            isHost = false;
+            if (hostInterval) { clearInterval(hostInterval); hostInterval = null; }
+        }
+    });
 
-        onValue(stateRef, (snapshot) => {
-            const data = snapshot.val();
-            if (data) updateClientState(data);
-        });
+    onValue(stateRef, (snapshot) => {
+        const data = snapshot.val();
+        if (data) updateClientState(data);
+    });
 
-        onValue(inputsRef, (snapshot) => {
-            if (!isHost) return;
-            const inputs = snapshot.val();
-            if (inputs) {
-                Object.keys(inputs).forEach(pId => {
-                    if (gameState.players[pId]) {
-                        gameState.players[pId].input = inputs[pId];
-                    }
-                });
-            }
-        });
+    onValue(inputsRef, (snapshot) => {
+        if (!isHost) return;
+        const inputs = snapshot.val();
+        if (inputs) {
+            Object.keys(inputs).forEach(pId => {
+                if (gameState.players && gameState.players[pId]) {
+                    gameState.players[pId].input = inputs[pId];
+                }
+            });
+        }
+    });
 
-        set(myPlayerRef, createPlayer(myId, myName));
+    set(myPlayerRef, createPlayer(myId, myName));
 
-        document.getElementById('lobby').style.display = 'none';
-        document.getElementById('start-btn').disabled = false;
-    } catch (e) {
-        console.error(e);
-        setStatus("連線發生錯誤，請重試");
-        document.getElementById('start-btn').disabled = false;
-    }
+    document.getElementById('lobby').style.display = 'none';
+    document.getElementById('start-btn').disabled = false;
 }
 
 function updateClientState(newState) {
@@ -240,7 +237,7 @@ function updateClientState(newState) {
     
     Object.keys(newState.players).forEach(pId => {
         let pNew = newState.players[pId];
-        let pOld = gameState.players[pId];
+        let pOld = gameState.players ? gameState.players[pId] : null;
         if (pOld && pOld.cells && pNew.cells) {
             pNew.cells.forEach((cNew, idx) => {
                 let cOld = pOld.cells[idx];
@@ -336,6 +333,7 @@ function addParticles(x, y, color, count = 8) {
 function updateHostLogic() {
     if (!isHost) return;
     const now = Date.now();
+    if (!gameState.players) gameState.players = {};
 
     Object.values(gameState.players).forEach(p => {
         let input = p.input || { angle: 0, speed: 0, split: false, eject: false };
@@ -345,6 +343,7 @@ function updateHostLogic() {
                 if (cell.mass >= 32) {
                     cell.mass -= 13;
                     let r = Math.sqrt(cell.mass) * RADIUS_SCALE;
+                    if (!gameState.ejected) gameState.ejected = [];
                     gameState.ejected.push({
                         x: cell.x + Math.cos(input.angle) * (r + 10),
                         y: cell.y + Math.sin(input.angle) * (r + 10),
@@ -399,44 +398,50 @@ function updateHostLogic() {
             
             if (cell.squish && cell.squish > 1) cell.squish += (1 - cell.squish) * 0.1;
 
-            for (let i = gameState.foods.length - 1; i >= 0; i--) {
-                let f = gameState.foods[i];
-                if (Math.hypot(cell.x - f.x, cell.y - f.y) < radius) {
-                    cell.mass += 1;
-                    gameState.foods[i] = createFood();
+            if (gameState.foods) {
+                for (let i = gameState.foods.length - 1; i >= 0; i--) {
+                    let f = gameState.foods[i];
+                    if (Math.hypot(cell.x - f.x, cell.y - f.y) < radius) {
+                        cell.mass += 1;
+                        gameState.foods[i] = createFood();
+                    }
                 }
             }
             
-            for (let i = gameState.ejected.length - 1; i >= 0; i--) {
-                let e = gameState.ejected[i];
-                if (Math.hypot(cell.x - e.x, cell.y - e.y) < radius) {
-                    cell.mass += e.mass;
-                    gameState.ejected.splice(i, 1);
+            if (gameState.ejected) {
+                for (let i = gameState.ejected.length - 1; i >= 0; i--) {
+                    let e = gameState.ejected[i];
+                    if (Math.hypot(cell.x - e.x, cell.y - e.y) < radius) {
+                        cell.mass += e.mass;
+                        gameState.ejected.splice(i, 1);
+                    }
                 }
             }
 
-            for (let i = 0; i < gameState.viruses.length; i++) {
-                let v = gameState.viruses[i];
-                if (cell.mass > v.radius && Math.hypot(cell.x - v.x, cell.y - v.y) < radius) {
-                    let maxAllowed = 16 - (p.cells.length + addedCells.length);
-                    if (maxAllowed > 0) {
-                        let targetPieces = Math.min(maxAllowed + 1, Math.floor(cell.mass / 18));
-                        if (targetPieces > 1) {
-                            let splitMass = cell.mass / targetPieces;
-                            cell.mass = splitMass;
-                            for (let k = 1; k < targetPieces; k++) {
-                                let a = (Math.PI * 2 / targetPieces) * k;
-                                addedCells.push({
-                                    x: cell.x, y: cell.y, renderX: cell.x, renderY: cell.y,
-                                    mass: splitMass, vx: Math.cos(a) * 20, vy: Math.sin(a) * 20,
-                                    splitTime: now, squish: 1.4
-                                });
+            if (gameState.viruses) {
+                for (let i = 0; i < gameState.viruses.length; i++) {
+                    let v = gameState.viruses[i];
+                    if (cell.mass > v.radius && Math.hypot(cell.x - v.x, cell.y - v.y) < radius) {
+                        let maxAllowed = 16 - (p.cells.length + addedCells.length);
+                        if (maxAllowed > 0) {
+                            let targetPieces = Math.min(maxAllowed + 1, Math.floor(cell.mass / 18));
+                            if (targetPieces > 1) {
+                                let splitMass = cell.mass / targetPieces;
+                                cell.mass = splitMass;
+                                for (let k = 1; k < targetPieces; k++) {
+                                    let a = (Math.PI * 2 / targetPieces) * k;
+                                    addedCells.push({
+                                        x: cell.x, y: cell.y, renderX: cell.x, renderY: cell.y,
+                                        mass: splitMass, vx: Math.cos(a) * 20, vy: Math.sin(a) * 20,
+                                        splitTime: now, squish: 1.4
+                                    });
+                                }
                             }
                         }
+                        gameState.viruses[i] = createVirus();
+                        addParticles(v.x, v.y, '#33ff33', 20);
+                        break;
                     }
-                    gameState.viruses[i] = createVirus();
-                    addParticles(v.x, v.y, '#33ff33', 20);
-                    break;
                 }
             }
         });
@@ -468,15 +473,17 @@ function updateHostLogic() {
         }
     });
 
-    gameState.ejected.forEach(e => {
-        if (e.speed > 0.1) {
-            e.x += Math.cos(e.angle) * e.speed;
-            e.y += Math.sin(e.angle) * e.speed;
-            e.speed *= 0.86;
-        } else {
-            e.speed = 0;
-        }
-    });
+    if (gameState.ejected) {
+        gameState.ejected.forEach(e => {
+            if (e.speed > 0.1) {
+                e.x += Math.cos(e.angle) * e.speed;
+                e.y += Math.sin(e.angle) * e.speed;
+                e.speed *= 0.86;
+            } else {
+                e.speed = 0;
+            }
+        });
+    }
 
     let allPlayers = Object.values(gameState.players);
     for (let i = 0; i < allPlayers.length; i++) {
