@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>FR.gg - Fixed P2P Edition</title>
+    <title>FR.gg - Preset Server Edition</title>
     <link rel="icon" type="image/jpeg" href="https://i.ibb.co/cXZ9bzt5/FR-gg.jpg">
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; touch-action: none; }
@@ -23,11 +23,11 @@
         .panel h1 { font-size: 34px; margin-bottom: 18px; color: #00f2fe; text-shadow: 0 0 15px rgba(0,242,254,0.6); letter-spacing: 2px; }
         .input-group { margin-bottom: 14px; text-align: left; }
         .input-group label { display: block; font-size: 12px; margin-bottom: 6px; color: #8a99ad; font-weight: 600; }
-        .input-group input {
+        .input-group input, .input-group select {
             width: 100%; padding: 12px; border-radius: 10px; border: 1px solid #2a354f;
             background: #0d1222; color: #fff; font-size: 15px; outline: none; transition: border 0.2s;
         }
-        .input-group input:focus { border-color: #00f2fe; }
+        .input-group input:focus, .input-group select:focus { border-color: #00f2fe; }
         
         .btn-group { display: flex; gap: 10px; margin-top: 10px; }
         .btn {
@@ -59,8 +59,6 @@
 
         #status-msg { margin-top: 14px; font-size: 13px; color: #00f2fe; min-height: 18px; word-break: break-all; }
         
-        #room-info { margin-top: 10px; font-size: 14px; color: #ffeb3b; font-weight: bold; }
-
         #joystick-zone {
             position: absolute; bottom: 25px; left: 25px; width: 110px; height: 110px;
             border-radius: 50%; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.2);
@@ -94,14 +92,16 @@
                 <input type="text" id="nickname" placeholder="輸入名稱..." maxlength="10" value="玩家">
             </div>
             <div class="input-group">
-                <label>房間代碼 (加入他人房間時填寫)</label>
-                <input type="text" id="room-code-input" placeholder="例如: 8888" maxlength="10">
+                <label>選擇伺服器房號</label>
+                <select id="server-select">
+                    <option value="1111">亞洲分區 1 (房號: 1111)</option>
+                    <option value="2222">亞洲分區 2 (房號: 2222)</option>
+                    <option value="3333">亞洲分區 3 (房號: 3333)</option>
+                </select>
             </div>
             <div class="btn-group">
-                <button class="btn" id="create-btn" onclick="createRoom()">創建房間</button>
-                <button class="btn btn-sec" id="join-btn" onclick="joinRoom()">加入房間</button>
+                <button class="btn" id="start-btn" onclick="connectToServer()">進入遊戲 / 建立房間</button>
             </div>
-            <div id="room-info"></div>
             <div id="status-msg"></div>
         </div>
     </div>
@@ -140,7 +140,6 @@ const PADDING = 50;
 const RADIUS_SCALE = 3.6;
 const RECOMBINE_TIME = 18000;
 
-// 配置標準網絡 STUN/TURN
 const PEER_CONFIG = {
     debug: 1,
     config: {
@@ -148,16 +147,8 @@ const PEER_CONFIG = {
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'stun:stun1.l.google.com:19302' },
             { urls: 'stun:global.stun.twilio.com:3478' },
-            {
-                urls: 'turn:openrelay.metered.ca:80',
-                username: 'openrelay',
-                credential: 'openrelay'
-            },
-            {
-                urls: 'turn:openrelay.metered.ca:443',
-                username: 'openrelay',
-                credential: 'openrelay'
-            }
+            { urls: 'turn:openrelay.metered.ca:80', username: 'openrelay', credential: 'openrelay' },
+            { urls: 'turn:openrelay.metered.ca:443', username: 'openrelay', credential: 'openrelay' }
         ]
     }
 };
@@ -205,96 +196,74 @@ function setStatus(msg) {
     document.getElementById('status-msg').innerText = msg;
 }
 
-// 創建房間（房主）
-function createRoom() {
+// 智慧連線：如果該房號沒人建立，自己就當房主；如果有人建立了，就以客戶端加入！
+function connectToServer() {
     myName = document.getElementById('nickname').value.trim() || "無名玩家";
-    let customCode = document.getElementById('room-code-input').value.trim();
-    
-    // 生成隨機 4 位數房號或使用自訂房號
-    currentRoomId = customCode ? 'frgg_' + customCode : 'frgg_' + Math.floor(1000 + Math.random() * 9000);
-    
-    toggleButtons(true);
-    setStatus("正在創建伺服器房間...");
+    let selectedCode = document.getElementById('server-select').value;
+    currentRoomId = 'frgg_' + selectedCode;
+
+    document.getElementById('start-btn').disabled = true;
+    setStatus("正在嘗試連接伺服器...");
 
     cleanUpTimers();
     if (peer) { try { peer.destroy(); } catch(e){} peer = null; }
 
+    // 先嘗試以「房主 ID」進行註冊
+    isHost = true;
+    myId = currentRoomId;
     peer = new Peer(currentRoomId, PEER_CONFIG);
 
     peer.on('open', (id) => {
-        let displayCode = id.replace('frgg_', '');
-        setStatus("成功建立房間！房號為: " + displayCode);
-        document.getElementById('room-info').innerText = "房間代碼: " + displayCode;
+        // 成功註冊該 ID，代表你是第一個進來的人 -> 成為房主！
+        setStatus("成功建立伺服器！你是房主。");
         becomeHost(currentRoomId);
         setTimeout(() => {
             document.getElementById('lobby').style.display = 'none';
-            toggleButtons(false);
-        }, 1000);
+            document.getElementById('start-btn').disabled = false;
+        }, 800);
     });
 
     peer.on('error', (err) => {
-        console.error("Host Error:", err);
         if (err.type === 'unavailable-id') {
-            setStatus("該房間代碼已被佔用，請更換代碼或留空讓系統自動生成！");
+            // ID 已被佔用，代表房主已經在了 -> 改以「客戶端」身分去連線他！
+            setStatus("伺服器已有房主，正在加入遊戲...");
+            peer.destroy();
+            
+            isHost = false;
+            myId = 'p_' + Math.random().toString(36).substring(2, 9);
+            peer = new Peer(myId, PEER_CONFIG);
+
+            peer.on('open', () => {
+                conn = peer.connect(currentRoomId, { metadata: { signature: GAME_SIG, clientName: myName }, reliable: true });
+                setupClientConn(conn, currentRoomId);
+            });
+
+            peer.on('error', (clientErr) => {
+                console.error("Client Error:", clientErr);
+                setStatus("連線失敗，請稍後再試。");
+                document.getElementById('start-btn').disabled = false;
+            });
         } else {
-            setStatus("建立房間失敗：" + err.type);
+            setStatus("連線發生錯誤：" + err.type);
+            document.getElementById('start-btn').disabled = false;
         }
-        toggleButtons(false);
     });
-}
-
-// 加入房間（客端）
-function joinRoom() {
-    myName = document.getElementById('nickname').value.trim() || "無名玩家";
-    let code = document.getElementById('room-code-input').value.trim();
-
-    if (!code) {
-        setStatus("請輸入欲加入的房間代碼！");
-        return;
-    }
-
-    currentRoomId = 'frgg_' + code;
-    toggleButtons(true);
-    setStatus("正在連線至房間 " + code + "...");
-
-    isHost = false;
-    cleanUpTimers();
-    if (peer) { try { peer.destroy(); } catch(e){} peer = null; }
-
-    myId = 'p_' + Math.random().toString(36).substring(2, 9);
-    peer = new Peer(myId, PEER_CONFIG);
-
-    peer.on('open', () => {
-        conn = peer.connect(currentRoomId, { metadata: { signature: GAME_SIG, clientName: myName }, reliable: true });
-        setupClientConn(conn, currentRoomId);
-    });
-
-    peer.on('error', (err) => {
-        console.error("Client Error:", err);
-        setStatus("連線失敗，請檢查代碼是否正確！");
-        toggleButtons(false);
-    });
-}
-
-function toggleButtons(disabled) {
-    document.getElementById('create-btn').disabled = disabled;
-    document.getElementById('join-btn').disabled = disabled;
 }
 
 function setupClientConn(c, targetHostId) {
     let connectTimeout = setTimeout(() => {
         if (!c || !c.open) {
-            setStatus("連線超時，請確認房主是否已在房間內！");
-            toggleButtons(false);
+            setStatus("連線超時！");
+            document.getElementById('start-btn').disabled = false;
         }
     }, 8000);
 
     c.on('open', () => {
         clearTimeout(connectTimeout);
-        setStatus("成功連入房間！");
+        setStatus("成功加入遊戲！");
         c.send({ type: 'JOIN', name: myName });
         document.getElementById('lobby').style.display = 'none';
-        toggleButtons(false);
+        document.getElementById('start-btn').disabled = false;
 
         heartbeatInterval = setInterval(() => {
             if (c && c.open) c.send({ type: 'PING' });
@@ -309,15 +278,12 @@ function setupClientConn(c, targetHostId) {
     });
 
     c.on('close', () => handleHostDisconnect());
-    c.on('error', (err) => {
-        console.error("Connection Error:", err);
-        handleHostDisconnect();
-    });
+    c.on('error', () => handleHostDisconnect());
 }
 
 function handleHostDisconnect() {
     if (isHost) return;
-    setStatus("房主已離線，遊戲連線中斷。");
+    setStatus("房主已離線。");
     returnToLobby();
 }
 
@@ -408,9 +374,8 @@ function respawn() {
 function returnToLobby() {
     document.getElementById('gameover').style.display = 'none';
     document.getElementById('lobby').style.display = 'flex';
-    toggleButtons(false);
+    document.getElementById('start-btn').disabled = false;
     setStatus("");
-    document.getElementById('room-info').innerText = "";
     cleanUpTimers();
     isHost = false;
     if (peer) peer.destroy();
