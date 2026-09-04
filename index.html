@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>FR.gg - Production Multiplayer Edition</title>
+    <title>FR.gg - Fixed P2P Edition</title>
     <link rel="icon" type="image/jpeg" href="https://i.ibb.co/cXZ9bzt5/FR-gg.jpg">
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; touch-action: none; }
@@ -17,21 +17,23 @@
         }
         .panel {
             background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.12);
-            padding: 26px; border-radius: 20px; width: 88%; max-width: 350px; text-align: center;
+            padding: 26px; border-radius: 20px; width: 88%; max-width: 360px; text-align: center;
             box-shadow: 0 20px 50px rgba(0,0,0,0.6);
         }
         .panel h1 { font-size: 34px; margin-bottom: 18px; color: #00f2fe; text-shadow: 0 0 15px rgba(0,242,254,0.6); letter-spacing: 2px; }
         .input-group { margin-bottom: 14px; text-align: left; }
         .input-group label { display: block; font-size: 12px; margin-bottom: 6px; color: #8a99ad; font-weight: 600; }
-        .input-group input, .input-group select {
+        .input-group input {
             width: 100%; padding: 12px; border-radius: 10px; border: 1px solid #2a354f;
             background: #0d1222; color: #fff; font-size: 15px; outline: none; transition: border 0.2s;
         }
-        .input-group input:focus, .input-group select:focus { border-color: #00f2fe; }
+        .input-group input:focus { border-color: #00f2fe; }
+        
+        .btn-group { display: flex; gap: 10px; margin-top: 10px; }
         .btn {
-            width: 100%; padding: 14px; border: none; border-radius: 10px;
+            flex: 1; padding: 14px; border: none; border-radius: 10px;
             background: linear-gradient(135deg, #00f2fe 0%, #4facfe 100%);
-            color: white; font-weight: bold; font-size: 16px; cursor: pointer; margin-top: 10px;
+            color: white; font-weight: bold; font-size: 15px; cursor: pointer;
             box-shadow: 0 4px 15px rgba(0,242,254,0.3); transition: transform 0.1s, opacity 0.2s;
         }
         .btn:active { transform: scale(0.98); }
@@ -55,7 +57,9 @@
         #leaderboard li { font-size: 12px; font-weight: 600; display: flex; justify-content: space-between; margin-bottom: 4px; color: #cbd5e1; }
         #leaderboard li.me { color: #ffeb3b; }
 
-        #status-msg { margin-top: 12px; font-size: 13px; color: #00f2fe; min-height: 18px; word-break: break-all; }
+        #status-msg { margin-top: 14px; font-size: 13px; color: #00f2fe; min-height: 18px; word-break: break-all; }
+        
+        #room-info { margin-top: 10px; font-size: 14px; color: #ffeb3b; font-weight: bold; }
 
         #joystick-zone {
             position: absolute; bottom: 25px; left: 25px; width: 110px; height: 110px;
@@ -90,14 +94,14 @@
                 <input type="text" id="nickname" placeholder="輸入名稱..." maxlength="10" value="玩家">
             </div>
             <div class="input-group">
-                <label>選擇伺服器房號</label>
-                <select id="server-select">
-                    <option value="frgg_room_asia_1">亞洲分區 1 (Asia 1)</option>
-                    <option value="frgg_room_asia_2">亞洲分區 2 (Asia 2)</option>
-                    <option value="frgg_room_global_1">環球頻道 1 (Global 1)</option>
-                </select>
+                <label>房間代碼 (加入他人房間時填寫)</label>
+                <input type="text" id="room-code-input" placeholder="例如: 8888" maxlength="10">
             </div>
-            <button class="btn" id="start-btn" onclick="startGame()">進入遊戲</button>
+            <div class="btn-group">
+                <button class="btn" id="create-btn" onclick="createRoom()">創建房間</button>
+                <button class="btn btn-sec" id="join-btn" onclick="joinRoom()">加入房間</button>
+            </div>
+            <div id="room-info"></div>
             <div id="status-msg"></div>
         </div>
     </div>
@@ -136,16 +140,14 @@ const PADDING = 50;
 const RADIUS_SCALE = 3.6;
 const RECOMBINE_TIME = 18000;
 
-// 配置包含 STUN 與開放式 TURN 中繼伺服器（解決跨電信網路與防火牆阻擋）
+// 配置標準網絡 STUN/TURN
 const PEER_CONFIG = {
     debug: 1,
     config: {
         iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'stun:stun1.l.google.com:19302' },
-            { urls: 'stun:stun2.l.google.com:19302' },
             { urls: 'stun:global.stun.twilio.com:3478' },
-            // TURN 中繼伺服器（專治 4G/5G 與雙方 NAT 打洞失敗問題）
             {
                 urls: 'turn:openrelay.metered.ca:80',
                 username: 'openrelay',
@@ -153,11 +155,6 @@ const PEER_CONFIG = {
             },
             {
                 urls: 'turn:openrelay.metered.ca:443',
-                username: 'openrelay',
-                credential: 'openrelay'
-            },
-            {
-                urls: 'turn:openrelay.metered.ca:443?transport=tcp',
                 username: 'openrelay',
                 credential: 'openrelay'
             }
@@ -193,8 +190,6 @@ let lastSendTime = 0;
 
 let hostInterval = null;
 let heartbeatInterval = null;
-let retryCount = 0;
-const MAX_RETRIES = 3;
 
 let isPageVisible = true;
 document.addEventListener('visibilitychange', () => {
@@ -210,49 +205,58 @@ function setStatus(msg) {
     document.getElementById('status-msg').innerText = msg;
 }
 
-function startGame() {
+// 創建房間（房主）
+function createRoom() {
     myName = document.getElementById('nickname').value.trim() || "無名玩家";
-    currentRoomId = document.getElementById('server-select').value;
-    document.getElementById('start-btn').disabled = true;
-    setStatus("嘗試連線至伺服器中繼節點...");
+    let customCode = document.getElementById('room-code-input').value.trim();
+    
+    // 生成隨機 4 位數房號或使用自訂房號
+    currentRoomId = customCode ? 'frgg_' + customCode : 'frgg_' + Math.floor(1000 + Math.random() * 9000);
+    
+    toggleButtons(true);
+    setStatus("正在創建伺服器房間...");
 
-    retryCount = 0;
-    initPeerAsHost(currentRoomId);
-}
-
-function initPeerAsHost(targetId) {
     cleanUpTimers();
     if (peer) { try { peer.destroy(); } catch(e){} peer = null; }
 
-    peer = new Peer(targetId, PEER_CONFIG);
+    peer = new Peer(currentRoomId, PEER_CONFIG);
 
-    peer.on('open', () => {
-        retryCount = 0;
-        setStatus("成功建立房間，成為主辦玩家 (Host)！");
-        becomeHost(targetId);
-        document.getElementById('lobby').style.display = 'none';
-        document.getElementById('start-btn').disabled = false;
+    peer.on('open', (id) => {
+        let displayCode = id.replace('frgg_', '');
+        setStatus("成功建立房間！房號為: " + displayCode);
+        document.getElementById('room-info').innerText = "房間代碼: " + displayCode;
+        becomeHost(currentRoomId);
+        setTimeout(() => {
+            document.getElementById('lobby').style.display = 'none';
+            toggleButtons(false);
+        }, 1000);
     });
 
     peer.on('error', (err) => {
+        console.error("Host Error:", err);
         if (err.type === 'unavailable-id') {
-            if (retryCount < MAX_RETRIES) {
-                retryCount++;
-                setStatus(`房間已存在，嘗試加入房主中 (${retryCount}/${MAX_RETRIES})...`);
-                connectAsClient(targetId);
-            } else {
-                setStatus("連線超時，請嘗試選擇其他房號頻道！");
-                document.getElementById('start-btn').disabled = false;
-            }
+            setStatus("該房間代碼已被佔用，請更換代碼或留空讓系統自動生成！");
         } else {
-            console.error("Peer Error:", err);
-            setStatus("連線遭遇阻擋，正在自動降級連線中...");
-            connectAsClient(targetId);
+            setStatus("建立房間失敗：" + err.type);
         }
+        toggleButtons(false);
     });
 }
 
-function connectAsClient(hostId) {
+// 加入房間（客端）
+function joinRoom() {
+    myName = document.getElementById('nickname').value.trim() || "無名玩家";
+    let code = document.getElementById('room-code-input').value.trim();
+
+    if (!code) {
+        setStatus("請輸入欲加入的房間代碼！");
+        return;
+    }
+
+    currentRoomId = 'frgg_' + code;
+    toggleButtons(true);
+    setStatus("正在連線至房間 " + code + "...");
+
     isHost = false;
     cleanUpTimers();
     if (peer) { try { peer.destroy(); } catch(e){} peer = null; }
@@ -261,32 +265,36 @@ function connectAsClient(hostId) {
     peer = new Peer(myId, PEER_CONFIG);
 
     peer.on('open', () => {
-        conn = peer.connect(hostId, { metadata: { signature: GAME_SIG, clientName: myName }, reliable: true });
-        setupClientConn(conn, hostId);
+        conn = peer.connect(currentRoomId, { metadata: { signature: GAME_SIG, clientName: myName }, reliable: true });
+        setupClientConn(conn, currentRoomId);
     });
 
     peer.on('error', (err) => {
-        console.error("Client Peer Error:", err);
-        setStatus("加入房間失敗，正在重試...");
-        document.getElementById('start-btn').disabled = false;
+        console.error("Client Error:", err);
+        setStatus("連線失敗，請檢查代碼是否正確！");
+        toggleButtons(false);
     });
 }
 
-function setupClientConn(c, hostId) {
+function toggleButtons(disabled) {
+    document.getElementById('create-btn').disabled = disabled;
+    document.getElementById('join-btn').disabled = disabled;
+}
+
+function setupClientConn(c, targetHostId) {
     let connectTimeout = setTimeout(() => {
         if (!c || !c.open) {
-            setStatus("無法連上房主，正在嘗試爭奪房主權限...");
-            initPeerAsHost(currentRoomId);
+            setStatus("連線超時，請確認房主是否已在房間內！");
+            toggleButtons(false);
         }
-    }, 7000);
+    }, 8000);
 
     c.on('open', () => {
         clearTimeout(connectTimeout);
-        retryCount = 0;
-        setStatus("成功進入遊戲頻道！");
+        setStatus("成功連入房間！");
         c.send({ type: 'JOIN', name: myName });
         document.getElementById('lobby').style.display = 'none';
-        document.getElementById('start-btn').disabled = false;
+        toggleButtons(false);
 
         heartbeatInterval = setInterval(() => {
             if (c && c.open) c.send({ type: 'PING' });
@@ -309,17 +317,8 @@ function setupClientConn(c, hostId) {
 
 function handleHostDisconnect() {
     if (isHost) return;
-    setStatus("房主斷線，正在自動遷移主機...");
-    
-    playerOrder = playerOrder.filter(id => id !== currentRoomId);
-
-    if (playerOrder.length > 0 && playerOrder[0] === myId) {
-        becomeHost(currentRoomId);
-    } else {
-        setTimeout(() => {
-            connectAsClient(currentRoomId);
-        }, 1200);
-    }
+    setStatus("房主已離線，遊戲連線中斷。");
+    returnToLobby();
 }
 
 function updateClientState(newState) {
@@ -409,8 +408,9 @@ function respawn() {
 function returnToLobby() {
     document.getElementById('gameover').style.display = 'none';
     document.getElementById('lobby').style.display = 'flex';
-    document.getElementById('start-btn').disabled = false;
+    toggleButtons(false);
     setStatus("");
+    document.getElementById('room-info').innerText = "";
     cleanUpTimers();
     isHost = false;
     if (peer) peer.destroy();
