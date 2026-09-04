@@ -1,0 +1,778 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>FR.gg</title>
+    <link rel="icon" type="image/jpeg" href="https://i.ibb.co/cXZ9bzt5/FR-gg.jpg">
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; touch-action: none; }
+        body, html { width: 100%; height: 100%; overflow: hidden; background: #05070f; font-family: 'Segoe UI', Arial, sans-serif; position: fixed; }
+        canvas { display: block; width: 100vw; height: 100vh; position: absolute; top:0; left:0; z-index: 1; }
+
+        .overlay-screen {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(5, 7, 15, 0.88); backdrop-filter: blur(16px);
+            display: flex; justify-content: center; align-items: center; z-index: 10; color: white;
+        }
+        .panel {
+            background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.12);
+            padding: 30px; border-radius: 20px; width: 90%; max-width: 360px; text-align: center;
+            box-shadow: 0 20px 50px rgba(0,0,0,0.6);
+        }
+        .panel h1 { font-size: 36px; margin-bottom: 20px; color: #00f2fe; text-shadow: 0 0 15px rgba(0,242,254,0.6); letter-spacing: 2px; }
+        .input-group { margin-bottom: 16px; text-align: left; }
+        .input-group label { display: block; font-size: 13px; margin-bottom: 6px; color: #8a99ad; font-weight: 600; }
+        .input-group input, .input-group select {
+            width: 100%; padding: 12px 14px; border-radius: 10px; border: 1px solid #2a354f;
+            background: #0d1222; color: #fff; font-size: 15px; outline: none; transition: border 0.2s;
+        }
+        .input-group input:focus, .input-group select:focus { border-color: #00f2fe; }
+        .btn {
+            width: 100%; padding: 14px; border: none; border-radius: 10px;
+            background: linear-gradient(135deg, #00f2fe 0%, #4facfe 100%);
+            color: white; font-weight: bold; font-size: 16px; cursor: pointer; margin-top: 10px;
+            box-shadow: 0 4px 15px rgba(0,242,254,0.3); transition: transform 0.1s, opacity 0.2s;
+        }
+        .btn:active { transform: scale(0.98); }
+        .btn-sec { background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); box-shadow: none; }
+
+        #hud {
+            position: absolute; top: 16px; left: 16px; z-index: 5;
+            background: rgba(0, 0, 0, 0.4); border: 1px solid rgba(255, 255, 255, 0.1);
+            padding: 10px 16px; border-radius: 12px; color: white; font-size: 14px; font-weight: 700;
+            backdrop-filter: blur(8px); pointer-events: none;
+        }
+
+        #leaderboard {
+            position: absolute; top: 16px; right: 16px; z-index: 5;
+            background: rgba(0, 0, 0, 0.4); border: 1px solid rgba(255, 255, 255, 0.1);
+            padding: 12px 16px; border-radius: 12px; color: white; width: 170px;
+            backdrop-filter: blur(8px); pointer-events: none;
+        }
+        #leaderboard h3 { font-size: 13px; letter-spacing: 1.5px; color: #00f2fe; margin-bottom: 8px; text-align: center; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 5px; }
+        #leaderboard ol { list-style: none; padding: 0; margin: 0; }
+        #leaderboard li { font-size: 12px; font-weight: 600; display: flex; justify-content: space-between; margin-bottom: 4px; color: #cbd5e1; }
+        #leaderboard li.me { color: #ffeb3b; }
+
+        /* 觸控控制項樣式 */
+        #joystick-zone { position: absolute; bottom: 30px; left: 30px; width: 120px; height: 120px; border-radius: 50%; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.15); touch-action: none; z-index: 5; }
+        #joystick-knob { position: absolute; top: 35px; left: 35px; width: 50px; height: 50px; border-radius: 50%; background: rgba(255,255,255,0.3); pointer-events: none; transition: background 0.2s; }
+        #mobile-controls { position: absolute; bottom: 30px; right: 30px; display: flex; gap: 16px; z-index: 5; }
+        .act-btn { width: 62px; height: 62px; border-radius: 50%; background: rgba(255,255,255,0.1); border: 2px solid rgba(255,255,255,0.25); color: white; font-weight: bold; font-size: 15px; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px); }
+        .act-btn:active { background: rgba(0, 242, 254, 0.4); border-color: #00f2fe; }
+
+        /* 隱藏邏輯：當設備支援滑鼠 (Mouse Hover) 時，預設隱藏手機控制項 */
+        @media (hover: hover) and (pointer: fine) {
+            #joystick-zone, #mobile-controls {
+                display: none !important;
+            }
+        }
+    </style>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+</head>
+<body>
+
+    <div id="lobby" class="overlay-screen">
+        <div class="panel">
+            <h1>FR.gg</h1>
+            <div class="input-group">
+                <label>玩家暱稱</label>
+                <input type="text" id="nickname" placeholder="輸入名稱..." maxlength="10" value="玩家">
+            </div>
+            <div class="input-group">
+                <label>選擇伺服器</label>
+                <select id="server-select">
+                    <option value="frgg_asia_v2_1">亞洲分區 1 (Asia 1)</option>
+                    <option value="frgg_asia_v2_2">亞洲分區 2 (Asia 2)</option>
+                </select>
+            </div>
+            <button class="btn" onclick="startGame()">進入遊戲</button>
+        </div>
+    </div>
+
+    <div id="gameover" class="overlay-screen" style="display: none;">
+        <div class="panel">
+            <h1 style="color: #ff3366;">已被吞噬</h1>
+            <p style="margin-bottom: 20px; color: #a0aec0; font-size: 15px;">最終得分: <span id="final-score" style="color: #ffeb3b; font-weight: bold; font-size: 20px;">0</span></p>
+            <button class="btn" onclick="respawn()">再次挑戰</button>
+            <button class="btn btn-sec" onclick="returnToLobby()">返回大廳</button>
+        </div>
+    </div>
+
+    <div id="hud">質量: <span id="hud-mass">0</span></div>
+
+    <div id="leaderboard">
+        <h3>排行榜</h3>
+        <ol id="rank-list"></ol>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <div id="joystick-zone"><div id="joystick-knob"></div></div>
+    <div id="mobile-controls">
+        <div class="act-btn" id="btn-w">W</div>
+        <div class="act-btn" id="btn-space">分</div>
+    </div>
+
+<script>
+document.addEventListener('gesturestart', e => e.preventDefault());
+document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
+
+const GAME_SIG = "FR_GG_V2_SECURE";
+const WORLD_SIZE = 3600;
+const PADDING = 50;
+const RADIUS_SCALE = 3.6;
+const RECOMBINE_TIME = 18000;
+
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+let dpr = window.devicePixelRatio || 1;
+
+let camera = { x: WORLD_SIZE / 2, y: WORLD_SIZE / 2, scale: 1 };
+let particles = [];
+let mousePos = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+
+function resizeCanvas() {
+    dpr = window.devicePixelRatio || 1;
+    canvas.width = window.innerWidth * dpr;
+    canvas.height = window.innerHeight * dpr;
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+let peer = null, conn = null, isHost = false;
+let myName = "玩家";
+let myId = 'peer_' + Math.random().toString(36).substring(2, 9);
+
+let gameState = { players: {}, foods: [], viruses: [], ejected: [] };
+let localInput = { angle: 0, speed: 0, split: false, eject: false };
+let lastSendTime = 0;
+let hostInterval = null;
+
+function startGame() {
+    myName = document.getElementById('nickname').value.trim() || "無名玩家";
+    const serverId = document.getElementById('server-select').value;
+    document.getElementById('lobby').style.display = 'none';
+
+    if (peer) peer.destroy();
+
+    // 先嘗試當 Host (使用固定 roomId)
+    peer = new Peer(serverId);
+
+    peer.on('open', () => {
+        // 成功取得 roomId 表示目前無房主，建立新房間
+        becomeHost(serverId);
+    });
+
+    peer.on('error', (err) => {
+        if (err.type === 'unavailable-id') {
+            // ID 被佔用，代表房主已存在，轉為 Client 模式
+            connectAsClient(serverId);
+        } else {
+            console.error("Peer Error:", err);
+        }
+    });
+}
+
+function connectAsClient(serverId) {
+    isHost = false;
+    peer = new Peer(myId);
+    peer.on('open', () => {
+        conn = peer.connect(serverId, { metadata: { signature: GAME_SIG }, reliable: false });
+        setupClientConn(conn);
+    });
+}
+
+function setupClientConn(c) {
+    c.on('open', () => {
+        c.send({ type: 'JOIN', name: myName });
+    });
+
+    c.on('data', (data) => {
+        if (data.type === 'STATE') {
+            updateClientState(data.state);
+        }
+    });
+
+    c.on('close', () => {
+        alert("與伺服器斷開連線");
+        returnToLobby();
+    });
+}
+
+function updateClientState(newState) {
+    Object.keys(newState.players).forEach(pId => {
+        let pNew = newState.players[pId];
+        let pOld = gameState.players[pId];
+        if (pOld) {
+            pNew.cells.forEach((cNew, idx) => {
+                if (pOld.cells[idx]) {
+                    cNew.renderX = pOld.cells[idx].renderX + (cNew.x - pOld.cells[idx].renderX) * 0.35;
+                    cNew.renderY = pOld.cells[idx].renderY + (cNew.y - pOld.cells[idx].renderY) * 0.35;
+                    cNew.squish = pOld.cells[idx].squish || 1;
+                } else {
+                    cNew.renderX = cNew.x; cNew.renderY = cNew.y; cNew.squish = 1;
+                }
+            });
+        } else {
+            pNew.cells.forEach(cNew => { cNew.renderX = cNew.x; cNew.renderY = cNew.y; cNew.squish = 1; });
+        }
+    });
+    gameState = newState;
+}
+
+function becomeHost(roomId) {
+    isHost = true;
+    gameState = { players: {}, foods: [], viruses: [], ejected: [] };
+    for (let i = 0; i < 400; i++) gameState.foods.push(createFood());
+    for (let i = 0; i < 14; i++) gameState.viruses.push(createVirus());
+    gameState.players[myId] = createPlayer(myId, myName);
+
+    peer.on('connection', (c) => {
+        if (!c.metadata || c.metadata.signature !== GAME_SIG) { c.close(); return; }
+
+        c.on('data', (data) => {
+            if (gameState.players[c.peer]) gameState.players[c.peer].lastSeen = Date.now();
+            if (data.type === 'JOIN' || data.type === 'RESPAWN') {
+                gameState.players[c.peer] = createPlayer(c.peer, data.name);
+            }
+            if (data.type === 'INPUT' && gameState.players[c.peer]) {
+                gameState.players[c.peer].input = data.input;
+            }
+        });
+        c.on('close', () => { delete gameState.players[c.peer]; });
+    });
+
+    if (hostInterval) clearInterval(hostInterval);
+    hostInterval = setInterval(updateHostLogic, 1000 / 30);
+}
+
+function respawn() {
+    document.getElementById('gameover').style.display = 'none';
+    if (isHost) {
+        gameState.players[myId] = createPlayer(myId, myName);
+    } else if (conn && conn.open) {
+        conn.send({ type: 'RESPAWN', name: myName });
+    }
+}
+
+function returnToLobby() {
+    document.getElementById('gameover').style.display = 'none';
+    document.getElementById('lobby').style.display = 'flex';
+    if (hostInterval) clearInterval(hostInterval);
+    isHost = false;
+    if (peer) peer.destroy();
+}
+
+function createPlayer(id, name) {
+    return {
+        id, name,
+        color: `hsl(${Math.random() * 360}, 80%, 55%)`,
+        cells: [{
+            x: Math.random() * (WORLD_SIZE - PADDING * 2) + PADDING,
+            y: Math.random() * (WORLD_SIZE - PADDING * 2) + PADDING,
+            renderX: 0, renderY: 0,
+            mass: 20, vx: 0, vy: 0, splitTime: 0, squish: 1
+        }],
+        input: { angle: 0, speed: 0, split: false, eject: false },
+        lastSeen: Date.now()
+    };
+}
+
+function createFood() {
+    return {
+        x: Math.random() * (WORLD_SIZE - PADDING * 2) + PADDING,
+        y: Math.random() * (WORLD_SIZE - PADDING * 2) + PADDING,
+        color: `hsl(${Math.random() * 360}, 85%, 60%)`
+    };
+}
+
+function createVirus() {
+    return {
+        x: Math.random() * (WORLD_SIZE - PADDING * 4) + PADDING * 2,
+        y: Math.random() * (WORLD_SIZE - PADDING * 4) + PADDING * 2,
+        radius: 48, mass: 100
+    };
+}
+
+function addParticles(x, y, color, count = 8) {
+    for (let i = 0; i < count; i++) {
+        let ang = Math.random() * Math.PI * 2;
+        let spd = Math.random() * 5 + 2;
+        particles.push({
+            x, y, vx: Math.cos(ang) * spd, vy: Math.sin(ang) * spd,
+            life: 1.0, color, size: Math.random() * 3 + 2
+        });
+    }
+}
+
+function updateHostLogic() {
+    const now = Date.now();
+
+    // 逾時踢出閒置玩家
+    Object.keys(gameState.players).forEach(pId => {
+        if (pId !== myId && now - gameState.players[pId].lastSeen > 4000) delete gameState.players[pId];
+    });
+
+    Object.values(gameState.players).forEach(p => {
+        let input = (p.id === myId) ? localInput : p.input;
+
+        // 噴吐細胞邏輯
+        if (input.eject && now - (p.lastEject || 0) > 80) {
+            p.cells.forEach(cell => {
+                if (cell.mass >= 32) {
+                    cell.mass -= 13;
+                    let r = Math.sqrt(cell.mass) * RADIUS_SCALE;
+                    gameState.ejected.push({
+                        x: cell.x + Math.cos(input.angle) * (r + 10),
+                        y: cell.y + Math.sin(input.angle) * (r + 10),
+                        angle: input.angle, speed: 20, mass: 12, color: p.color
+                    });
+                }
+            });
+            p.lastEject = now;
+            input.eject = false;
+        }
+
+        // 分裂邏輯
+        if (input.split) {
+            let availableSplits = 16 - p.cells.length;
+            if (availableSplits > 0) {
+                let newCells = [];
+                for (let cell of p.cells) {
+                    if (cell.mass >= 36 && newCells.length < availableSplits) {
+                        cell.mass /= 2;
+                        cell.squish = 1.35; // 分裂變形效果
+                        newCells.push({
+                            x: cell.x, y: cell.y, renderX: cell.x, renderY: cell.y,
+                            mass: cell.mass,
+                            vx: Math.cos(input.angle) * 24, vy: Math.sin(input.angle) * 24,
+                            splitTime: now, squish: 1.35
+                        });
+                        cell.splitTime = now;
+                    }
+                }
+                p.cells.push(...newCells);
+            }
+            input.split = false;
+        }
+
+        let addedCells = [];
+        p.cells.forEach((cell) => {
+            // 自然質量衰減 (大於 20 質量)
+            if (cell.mass > 20) cell.mass -= 0.002;
+
+            let radius = Math.sqrt(cell.mass) * RADIUS_SCALE;
+            let speed = Math.max(1.6, 9 - (radius * 0.032)) * (input.speed || 0);
+
+            cell.x += Math.cos(input.angle) * speed + (cell.vx || 0);
+            cell.y += Math.sin(input.angle) * speed + (cell.vy || 0);
+
+            if (cell.vx) cell.vx *= 0.88;
+            if (cell.vy) cell.vy *= 0.88;
+
+            cell.x = Math.max(radius + 10, Math.min(WORLD_SIZE - radius - 10, cell.x));
+            cell.y = Math.max(radius + 10, Math.min(WORLD_SIZE - radius - 10, cell.y));
+
+            cell.renderX = cell.renderX ? cell.renderX + (cell.x - cell.renderX) * 0.4 : cell.x;
+            cell.renderY = cell.renderY ? cell.renderY + (cell.y - cell.renderY) * 0.4 : cell.y;
+            
+            // 形變恢復動畫
+            if (cell.squish && cell.squish > 1) cell.squish += (1 - cell.squish) * 0.1;
+
+            // 食物吃取
+            for (let i = gameState.foods.length - 1; i >= 0; i--) {
+                let f = gameState.foods[i];
+                if (Math.hypot(cell.x - f.x, cell.y - f.y) < radius) {
+                    cell.mass += 1;
+                    gameState.foods[i] = createFood();
+                }
+            }
+            
+            // 吐出養分吃取
+            for (let i = gameState.ejected.length - 1; i >= 0; i--) {
+                let e = gameState.ejected[i];
+                if (Math.hypot(cell.x - e.x, cell.y - e.y) < radius) {
+                    cell.mass += e.mass;
+                    gameState.ejected.splice(i, 1);
+                }
+            }
+
+            // 病毒刺球踩中炸開
+            for (let i = 0; i < gameState.viruses.length; i++) {
+                let v = gameState.viruses[i];
+                if (cell.mass > v.radius && Math.hypot(cell.x - v.x, cell.y - v.y) < radius) {
+                    let maxAllowed = 16 - (p.cells.length + addedCells.length);
+                    if (maxAllowed > 0) {
+                        let targetPieces = Math.min(maxAllowed + 1, Math.floor(cell.mass / 18));
+                        if (targetPieces > 1) {
+                            let splitMass = cell.mass / targetPieces;
+                            cell.mass = splitMass;
+                            for (let k = 1; k < targetPieces; k++) {
+                                let a = (Math.PI * 2 / targetPieces) * k;
+                                addedCells.push({
+                                    x: cell.x, y: cell.y, renderX: cell.x, renderY: cell.y,
+                                    mass: splitMass, vx: Math.cos(a) * 20, vy: Math.sin(a) * 20,
+                                    splitTime: now, squish: 1.4
+                                });
+                            }
+                        }
+                    }
+                    gameState.viruses[i] = createVirus();
+                    addParticles(v.x, v.y, '#33ff33', 20);
+                    break;
+                }
+            }
+        });
+
+        if (addedCells.length > 0) p.cells.push(...addedCells);
+
+        // 同玩家細胞重組與碰撞
+        for (let i = 0; i < p.cells.length; i++) {
+            for (let j = i + 1; j < p.cells.length; j++) {
+                let c1 = p.cells[i], c2 = p.cells[j];
+                let dist = Math.hypot(c1.x - c2.x, c1.y - c2.y);
+                let r1 = Math.sqrt(c1.mass) * RADIUS_SCALE, r2 = Math.sqrt(c2.mass) * RADIUS_SCALE;
+                let minDist = r1 + r2;
+
+                if (now - c1.splitTime > RECOMBINE_TIME && now - c2.splitTime > RECOMBINE_TIME) {
+                    if (dist < r1) {
+                        c1.mass += c2.mass;
+                        c1.squish = 1.2;
+                        p.cells.splice(j, 1);
+                        j--;
+                    }
+                } else if (dist < minDist && dist > 0) {
+                    let overlap = minDist - dist;
+                    let nx = (c1.x - c2.x) / dist;
+                    let ny = (c1.y - c2.y) / dist;
+                    c1.x += nx * overlap * 0.15; c1.y += ny * overlap * 0.15;
+                    c2.x -= nx * overlap * 0.15; c2.y -= ny * overlap * 0.15;
+                }
+            }
+        }
+    });
+
+    // 吐出養分移動
+    gameState.ejected.forEach(e => {
+        if (e.speed > 0.1) {
+            e.x += Math.cos(e.angle) * e.speed;
+            e.y += Math.sin(e.angle) * e.speed;
+            e.speed *= 0.86;
+        } else {
+            e.speed = 0;
+        }
+    });
+
+    // 玩家間互吞邏輯
+    let allPlayers = Object.values(gameState.players);
+    for (let i = 0; i < allPlayers.length; i++) {
+        for (let j = 0; j < allPlayers.length; j++) {
+            if (i === j) continue;
+            let p1 = allPlayers[i], p2 = allPlayers[j];
+
+            p1.cells.forEach(c1 => {
+                for (let k = p2.cells.length - 1; k >= 0; k--) {
+                    let c2 = p2.cells[k];
+                    if (c1.mass >= c2.mass * 1.12) {
+                        let r1 = Math.sqrt(c1.mass) * RADIUS_SCALE;
+                        if (Math.hypot(c1.x - c2.x, c1.y - c2.y) < r1 - 4) {
+                            c1.mass += c2.mass;
+                            c1.squish = 1.25;
+                            addParticles(c2.x, c2.y, p2.color, 16);
+                            p2.cells.splice(k, 1);
+                        }
+                    }
+                }
+            });
+
+            if (p2.cells.length === 0) {
+                if (p2.id === myId && document.getElementById('gameover').style.display !== 'flex') {
+                    triggerGameOver(p2.lastScore || 0);
+                }
+                delete gameState.players[p2.id];
+            } else {
+                p2.lastScore = p2.cells.reduce((sum, c) => sum + c.mass, 0);
+            }
+        }
+    }
+
+    // 廣播遊戲狀態給所有 Clients
+    if (peer && peer.connections) {
+        Object.keys(peer.connections).forEach(pId => {
+            peer.connections[pId].forEach(c => {
+                if (c && c.open) c.send({ type: 'STATE', state: gameState });
+            });
+        });
+    }
+}
+
+function triggerGameOver(score) {
+    document.getElementById('final-score').innerText = Math.floor(score);
+    document.getElementById('gameover').style.display = 'flex';
+}
+
+function drawBackground() {
+    ctx.strokeStyle = '#12192d';
+    ctx.lineWidth = 1;
+    let gridSize = 80;
+
+    let startX = Math.floor((camera.x - window.innerWidth / camera.scale) / gridSize) * gridSize;
+    let endX = Math.ceil((camera.x + window.innerWidth / camera.scale) / gridSize) * gridSize;
+    let startY = Math.floor((camera.y - window.innerHeight / camera.scale) / gridSize) * gridSize;
+    let endY = Math.ceil((camera.y + window.innerHeight / camera.scale) / gridSize) * gridSize;
+
+    ctx.beginPath();
+    for (let x = startX; x <= endX; x += gridSize) {
+        ctx.moveTo(x, startY); ctx.lineTo(x, endY);
+    }
+    for (let y = startY; y <= endY; y += gridSize) {
+        ctx.moveTo(startX, y); ctx.lineTo(endX, y);
+    }
+    ctx.stroke();
+}
+
+function drawVirus(x, y, radius) {
+    ctx.save();
+    ctx.fillStyle = '#22cc44';
+    ctx.strokeStyle = '#15882c';
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    let spikes = 20;
+    let rot = Date.now() * 0.001; // 動態旋轉效果
+    for (let i = 0; i < spikes; i++) {
+        let angle = (i / spikes) * Math.PI * 2 + rot;
+        let r = (i % 2 === 0) ? radius : radius - 7;
+        let vx = x + Math.cos(angle) * r;
+        let vy = y + Math.sin(angle) * r;
+        if (i === 0) ctx.moveTo(vx, vy); else ctx.lineTo(vx, vy);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+}
+
+function updateHUD(totalMass) {
+    document.getElementById('hud-mass').innerText = Math.floor(totalMass);
+}
+
+function updateLeaderboard() {
+    const listEl = document.getElementById('rank-list');
+    const sorted = Object.values(gameState.players).map(p => ({
+        id: p.id, name: p.name,
+        totalMass: p.cells.reduce((sum, c) => sum + c.mass, 0)
+    })).sort((a, b) => b.totalMass - a.totalMass).slice(0, 5);
+
+    let html = '';
+    sorted.forEach((p, i) => {
+        html += `<li class="${p.id === myId ? 'me' : ''}"><span>${i + 1}. ${p.name}</span><span>${Math.floor(p.totalMass)}</span></li>`;
+    });
+    listEl.innerHTML = html;
+}
+
+function render() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    let me = gameState.players[myId];
+    if (me && me.cells.length > 0) {
+        let avgX = me.cells.reduce((sum, c) => sum + (c.renderX || c.x), 0) / me.cells.length;
+        let avgY = me.cells.reduce((sum, c) => sum + (c.renderY || c.y), 0) / me.cells.length;
+        let totalMass = me.cells.reduce((sum, c) => sum + c.mass, 0);
+
+        updateHUD(totalMass);
+
+        let targetScale = Math.max(0.35, 1 - (Math.sqrt(totalMass) * 0.0035));
+        camera.scale += (targetScale - camera.scale) * 0.08;
+        camera.x += (avgX - camera.x) * 0.1;
+        camera.y += (avgY - camera.y) * 0.1;
+    }
+
+    ctx.save();
+    ctx.scale(dpr, dpr);
+
+    ctx.translate(window.innerWidth / 2, window.innerHeight / 2);
+    ctx.scale(camera.scale, camera.scale);
+    ctx.translate(-camera.x, -camera.y);
+
+    drawBackground();
+
+    // 繪製地圖邊界發光
+    ctx.strokeStyle = '#00f2fe'; ctx.lineWidth = 10;
+    ctx.shadowColor = '#00f2fe'; ctx.shadowBlur = 15;
+    ctx.strokeRect(0, 0, WORLD_SIZE, WORLD_SIZE);
+    ctx.shadowBlur = 0;
+
+    let viewW = (window.innerWidth / camera.scale) / 2 + 100;
+    let viewH = (window.innerHeight / camera.scale) / 2 + 100;
+
+    // 食物渲染
+    gameState.foods.forEach(f => {
+        if (Math.abs(f.x - camera.x) < viewW && Math.abs(f.y - camera.y) < viewH) {
+            ctx.fillStyle = f.color;
+            ctx.beginPath(); ctx.arc(f.x, f.y, 5, 0, Math.PI * 2); ctx.fill();
+        }
+    });
+
+    // 噴吐養分渲染
+    gameState.ejected.forEach(e => {
+        if (Math.abs(e.x - camera.x) < viewW && Math.abs(e.y - camera.y) < viewH) {
+            ctx.fillStyle = e.color;
+            ctx.beginPath(); ctx.arc(e.x, e.y, 9, 0, Math.PI * 2); ctx.fill();
+            ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+        }
+    });
+
+    // 病毒刺球渲染
+    gameState.viruses.forEach(v => {
+        if (Math.abs(v.x - camera.x) < viewW + v.radius && Math.abs(v.y - camera.y) < viewH + v.radius) {
+            drawVirus(v.x, v.y, v.radius);
+        }
+    });
+
+    // 動態粒子效果
+    for (let i = particles.length - 1; i >= 0; i--) {
+        let pt = particles[i];
+        ctx.fillStyle = pt.color;
+        ctx.globalAlpha = pt.life;
+        ctx.beginPath(); ctx.arc(pt.x, pt.y, pt.size, 0, Math.PI * 2); ctx.fill();
+        pt.x += pt.vx; pt.y += pt.vy;
+        pt.life -= 0.03;
+        if (pt.life <= 0) particles.splice(i, 1);
+    }
+    ctx.globalAlpha = 1.0;
+
+    // 繪製玩家細胞
+    let renderCells = [];
+    Object.values(gameState.players).forEach(p => {
+        p.cells.forEach(c => renderCells.push({ ...c, color: p.color, name: p.name }));
+    });
+    renderCells.sort((a, b) => a.mass - b.mass);
+
+    renderCells.forEach(c => {
+        let rx = c.renderX || c.x;
+        let ry = c.renderY || c.y;
+        let r = Math.sqrt(c.mass) * RADIUS_SCALE;
+        let sq = c.squish || 1;
+
+        if (Math.abs(rx - camera.x) < viewW + r && Math.abs(ry - camera.y) < viewH + r) {
+            ctx.save();
+            ctx.translate(rx, ry);
+            ctx.scale(sq, 1 / sq); // 彈性變形縮放
+
+            ctx.fillStyle = c.color;
+            ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill();
+            
+            // 亮色外邊框
+            ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+            ctx.lineWidth = Math.max(3, r * 0.06);
+            ctx.stroke();
+
+            // 暱稱與質量文字
+            ctx.scale(1 / sq, sq); // 抵消文字變形
+            ctx.fillStyle = '#ffffff';
+            ctx.shadowColor = 'rgba(0,0,0,0.8)';
+            ctx.shadowBlur = 4;
+            ctx.font = `bold ${Math.max(13, r * 0.32)}px sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.fillText(c.name, 0, -(r * 0.08));
+            ctx.font = `600 ${Math.max(10, r * 0.24)}px sans-serif`;
+            ctx.fillText(Math.floor(c.mass), 0, (r * 0.28));
+
+            ctx.restore();
+        }
+    });
+
+    ctx.restore();
+    updateLeaderboard();
+
+    requestAnimationFrame(render);
+}
+requestAnimationFrame(render);
+
+// 鍵盤與滑鼠操作事件
+window.addEventListener('mousemove', (e) => {
+    mousePos.x = e.clientX;
+    mousePos.y = e.clientY;
+
+    let worldMouseX = (e.clientX - window.innerWidth / 2) / camera.scale + camera.x;
+    let worldMouseY = (e.clientY - window.innerHeight / 2) / camera.scale + camera.y;
+
+    let me = gameState.players[myId];
+    if (me && me.cells.length > 0) {
+        let avgX = me.cells.reduce((sum, c) => sum + c.x, 0) / me.cells.length;
+        let avgY = me.cells.reduce((sum, c) => sum + c.y, 0) / me.cells.length;
+        localInput.angle = Math.atan2(worldMouseY - avgY, worldMouseX - avgX);
+        localInput.speed = 1;
+        sendInput();
+    }
+});
+
+window.addEventListener('keydown', (e) => {
+    if (e.code === 'KeyW') { localInput.eject = true; sendInput(true); }
+    if (e.code === 'Space') { localInput.split = true; sendInput(true); }
+});
+
+// 手機觸控搖桿邏輯
+const joyZone = document.getElementById('joystick-zone');
+const joyKnob = document.getElementById('joystick-knob');
+let joyTouchId = null;
+
+joyZone.addEventListener('touchstart', (e) => {
+    if (joyTouchId === null) {
+        let touch = e.changedTouches[0];
+        joyTouchId = touch.identifier;
+    }
+});
+
+joyZone.addEventListener('touchmove', (e) => {
+    for (let i = 0; i < e.changedTouches.length; i++) {
+        let touch = e.changedTouches[i];
+        if (touch.identifier === joyTouchId) {
+            let rect = joyZone.getBoundingClientRect();
+            let dx = touch.clientX - (rect.left + rect.width / 2);
+            let dy = touch.clientY - (rect.top + rect.height / 2);
+            let dist = Math.hypot(dx, dy);
+            let maxDist = rect.width / 2;
+            let angle = Math.atan2(dy, dx);
+            let limitDist = Math.min(dist, maxDist);
+
+            joyKnob.style.transform = `translate(${Math.cos(angle)*limitDist}px, ${Math.sin(angle)*limitDist}px)`;
+            localInput.angle = angle;
+            localInput.speed = limitDist / maxDist;
+            sendInput();
+            break;
+        }
+    }
+});
+
+function resetJoystick(e) {
+    for (let i = 0; i < e.changedTouches.length; i++) {
+        if (e.changedTouches[i].identifier === joyTouchId) {
+            joyTouchId = null;
+            joyKnob.style.transform = `translate(0px, 0px)`;
+            localInput.speed = 0;
+            sendInput(true);
+            break;
+        }
+    }
+}
+joyZone.addEventListener('touchend', resetJoystick);
+joyZone.addEventListener('touchcancel', resetJoystick);
+
+document.getElementById('btn-w').addEventListener('touchstart', (e) => { e.preventDefault(); localInput.eject = true; sendInput(true); });
+document.getElementById('btn-space').addEventListener('touchstart', (e) => { e.preventDefault(); localInput.split = true; sendInput(true); });
+
+function sendInput(force = false) {
+    const now = Date.now();
+    if (force || now - lastSendTime > 30) {
+        if (!isHost && conn && conn.open) {
+            conn.send({ type: 'INPUT', input: localInput });
+            lastSendTime = now;
+        }
+    }
+}
+</script>
+</body>
+</html>
