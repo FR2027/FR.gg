@@ -80,7 +80,10 @@
             #joystick-zone, #mobile-controls { display: none !important; }
         }
     </style>
+    <!-- 引入 PeerJS 與 Firebase v8 SDK (相容 Realtime Database 語法) -->
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
 </head>
 <body>
 
@@ -94,9 +97,9 @@
             <div class="input-group">
                 <label>選擇伺服器分流</label>
                 <select id="server-select">
-                    <option value="1111">主分流伺服器🔥</option>
-                    <option value="2222">第二分流伺服器</option>
-                    <option value="3333">第三分流伺服器</option>
+                    <option value="1111">主分流伺服器🔥 (載入中...)</option>
+                    <option value="2222">第二分流伺服器 (載入中...)</option>
+                    <option value="3333">第三分流伺服器 (載入中...)</option>
                 </select>
             </div>
             <div class="btn-group">
@@ -131,15 +134,46 @@
     </div>
 
 <script>
+// ==================== 1. 初始化 Firebase 設定 ====================
+// 請替換成您自己的 Firebase 專案設定
+const firebaseConfig = {
+    apiKey: "YOUR_API_KEY",
+    authDomain: "YOUR_AUTH_DOMAIN",
+    databaseURL: "YOUR_DATABASE_URL",
+    projectId: "YOUR_PROJECT_ID",
+    storageBucket: "YOUR_STORAGE_BUCKET",
+    messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
+    appId: "YOUR_APP_ID"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+
+// 即時監聽並更新大廳各分流人數
+const serverSelect = document.getElementById('server-select');
+['1111', '2222', '3333'].forEach(serverCode => {
+    db.ref(`servers/frgg_${serverCode}/players`).on('value', (snapshot) => {
+        const players = snapshot.val() || {};
+        const count = Object.keys(players).length;
+        
+        // 更新下拉選單中的文字
+        for (let i = 0; i < serverSelect.options.length; i++) {
+            if (serverSelect.options[i].value === serverCode) {
+                const baseName = serverCode === '1111' ? '主分流伺服器🔥' : `第${serverCode[0]}分流伺服器`;
+                serverSelect.options[i].text = `${baseName} (${count}人)`;
+            }
+        }
+    });
+});
+
 document.addEventListener('gesturestart', e => e.preventDefault());
 document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
 
 const GAME_SIG = "FR_GG_V4_FIXED";
-const WORLD_SIZE = 5000; // [已優化] 擴大地圖尺寸從 3600 改為 5000
+const WORLD_SIZE = 5000;
 const PADDING = 50;
 const RADIUS_SCALE = 3.6;
 const RECOMBINE_TIME = 18000;
-const MAX_FOODS = 650; // 設定地圖最大食物維持數量
+const MAX_FOODS = 650;
 
 const PEER_CONFIG = {
     debug: 1,
@@ -172,8 +206,9 @@ resizeCanvas();
 
 let peer = null, conn = null, isHost = false;
 let myName = "未命名玩家";
-let myId = '';
+let myId = 'p_' + Math.random().toString(36).substring(2, 9);
 let currentRoomId = '';
+let currentServerCode = '';
 
 let gameState = { players: {}, foods: [], viruses: [], ejected: [] };
 let playerOrder = [];
@@ -197,63 +232,103 @@ function setStatus(msg) {
     document.getElementById('status-msg').innerText = msg;
 }
 
+// ==================== 2. 連線與自動房主選舉核心邏輯 ====================
 function connectToServer() {
     myName = document.getElementById('nickname').value.trim() || "無名玩家";
-    let selectedCode = document.getElementById('server-select').value;
-    currentRoomId = 'frgg_' + selectedCode;
+    currentServerCode = document.getElementById('server-select').value;
+    currentRoomId = 'frgg_' + currentServerCode;
 
     document.getElementById('start-btn').disabled = true;
-    setStatus("正在嘗試連接伺服器...");
+    setStatus("正在檢查伺服器狀態...");
 
     cleanUpTimers();
     if (peer) { try { peer.destroy(); } catch(e){} peer = null; }
 
-    isHost = true;
-    myId = currentRoomId;
-    peer = new Peer(currentRoomId, PEER_CONFIG);
+    // 透過 Firebase 讀取該分流目前的 Host ID
+    const hostRef = db.ref(`servers/${currentRoomId}/hostId`);
+    const playerPresenceRef = db.ref(`servers/${currentRoomId}/players/${myId}`);
 
-    peer.on('open', (id) => {
-        setStatus("成功加入伺服器");
-        becomeHost(currentRoomId);
+    // 設定玩家斷線自動從 Firebase 房客名單拔除
+    playerPresenceRef.onDisconnect().remove();
+    playerPresenceRef.set({ name: myName, joinedAt: firebase.database.ServerValue.TIMESTAMP });
+
+    hostRef.once('value', (snapshot) => {
+        let existingHostId = snapshot.val();
+
+        // 檢查如果沒有房主，或者房主不存在，自己來當房主
+        if (!existingHostId) {
+            claimHostAndStart(currentRoomId);
+        } else {
+            // 嘗試連線到現存的房主
+            tryConnectToHost(existingHostId);
+        }
+    });
+}
+
+function claimHostAndStart(roomId) {
+    isHost = true;
+    myId = roomId; // 房主使用固定的房間代碼當作 Peer ID
+    setStatus("分流正在建立...");
+
+    // 在 Firebase 登記自己為 Host，並設定當房主斷線時自動清除 hostId
+    const hostRef = db.ref(`servers/${roomId}/hostId`);
+    hostRef.set(myId);
+    hostRef.onDisconnect().remove();
+
+    // 更新自己在大廳的 Firebase 登記 ID
+    db.ref(`servers/${roomId}/players/${myId}`).set({ name: myName, joinedAt: firebase.database.ServerValue.TIMESTAMP });
+    db.ref(`servers/${roomId}/players/${myId}`).onDisconnect().remove();
+
+    peer = new Peer(myId, PEER_CONFIG);
+
+    peer.on('open', () => {
+        setStatus("伺服器建立成功！");
+        becomeHost(roomId);
         setTimeout(() => {
             document.getElementById('lobby').style.display = 'none';
             document.getElementById('start-btn').disabled = false;
-        }, 800);
+        }, 500);
     });
 
     peer.on('error', (err) => {
+        // 如果 ID 被佔用（代表剛好有人搶先一步），轉為一般客戶端加入
         if (err.type === 'unavailable-id') {
-            setStatus("伺服器連線中，等待加入遊戲...");
-            peer.destroy();
-            
             isHost = false;
             myId = 'p_' + Math.random().toString(36).substring(2, 9);
             peer = new Peer(myId, PEER_CONFIG);
-
-            peer.on('open', () => {
-                conn = peer.connect(currentRoomId, { metadata: { signature: GAME_SIG, clientName: myName }, reliable: true });
-                setupClientConn(conn, currentRoomId);
-            });
-
-            peer.on('error', (clientErr) => {
-                console.error("Client Error:", clientErr);
-                setStatus("連線失敗，請稍後再試。");
-                document.getElementById('start-btn').disabled = false;
-            });
+            peer.on('open', () => tryConnectToHost(roomId));
         } else {
-            setStatus("連線發生錯誤：" + err.type);
+            setStatus("伺服器錯誤: " + err.type);
             document.getElementById('start-btn').disabled = false;
         }
+    });
+}
+
+function tryConnectToHost(hostId) {
+    isHost = false;
+    setStatus(`正在連線至房主 (${hostId})...`);
+
+    peer = new Peer(myId, PEER_CONFIG);
+
+    peer.on('open', () => {
+        conn = peer.connect(hostId, { metadata: { signature: GAME_SIG, clientName: myName }, reliable: true });
+        setupClientConn(conn, hostId);
+    });
+
+    peer.on('error', (err) => {
+        setStatus("無法連線至伺服器，正在嘗試連接備用伺服器...");
+        // 房
+        claimHostAndStart(currentRoomId);
     });
 }
 
 function setupClientConn(c, targetHostId) {
     let connectTimeout = setTimeout(() => {
         if (!c || !c.open) {
-            setStatus("連線超時！");
-            document.getElementById('start-btn').disabled = false;
+            setStatus("連線超時，嘗連線備用伺服器...");
+            claimHostAndStart(currentRoomId);
         }
-    }, 8000);
+    }, 5000);
 
     c.on('open', () => {
         clearTimeout(connectTimeout);
@@ -280,8 +355,14 @@ function setupClientConn(c, targetHostId) {
 
 function handleHostDisconnect() {
     if (isHost) return;
-    setStatus("伺服器斷線。");
-    returnToLobby();
+    setStatus("房主已斷線，正在自動接管分流伺服器...");
+    cleanUpTimers();
+    if (peer) { try { peer.destroy(); } catch(e){} }
+    
+    // 自動升格成為新房主
+    setTimeout(() => {
+        claimHostAndStart(currentRoomId);
+    }, 1000);
 }
 
 function updateClientState(newState) {
@@ -357,6 +438,10 @@ function becomeHost(roomId) {
 function removePlayer(pId) {
     delete gameState.players[pId];
     playerOrder = playerOrder.filter(id => id !== pId);
+    // 同步從 Firebase 移除玩家節點
+    if (currentRoomId) {
+        db.ref(`servers/${currentRoomId}/players/${pId}`).remove();
+    }
 }
 
 function respawn() {
@@ -373,6 +458,15 @@ function returnToLobby() {
     document.getElementById('lobby').style.display = 'flex';
     document.getElementById('start-btn').disabled = false;
     setStatus("");
+    
+    // 清除自己在 Firebase 上的存在
+    if (currentRoomId && myId) {
+        db.ref(`servers/${currentRoomId}/players/${myId}`).remove();
+        if (isHost) {
+            db.ref(`servers/${currentRoomId}/hostId`).remove();
+        }
+    }
+
     cleanUpTimers();
     isHost = false;
     if (peer) peer.destroy();
@@ -423,7 +517,6 @@ function addParticles(x, y, color, count = 8) {
 function updateHostLogic() {
     const now = Date.now();
 
-    // [已優化] 食物定期動態補足機制：確保地圖上的食物數量維持在 MAX_FOODS
     if (gameState.foods.length < MAX_FOODS) {
         let diff = MAX_FOODS - gameState.foods.length;
         for (let i = 0; i < diff; i++) {
@@ -503,7 +596,7 @@ function updateHostLogic() {
                 let f = gameState.foods[i];
                 if (Math.hypot(cell.x - f.x, cell.y - f.y) < radius) {
                     cell.mass += 1;
-                    gameState.foods.splice(i, 1); // 確實移除被吃的食物
+                    gameState.foods.splice(i, 1);
                 }
             }
             
@@ -578,7 +671,6 @@ function updateHostLogic() {
         }
     });
 
-    // [已修復] 更加嚴謹且不會漏掉的玩家吞噬判定（修復「吃掉對方對方卻沒死」的問題）
     let allPlayers = Object.values(gameState.players);
     for (let i = 0; i < allPlayers.length; i++) {
         for (let j = 0; j < allPlayers.length; j++) {
@@ -588,13 +680,11 @@ function updateHostLogic() {
             p1.cells.forEach(c1 => {
                 for (let k = p2.cells.length - 1; k >= 0; k--) {
                     let c2 = p2.cells[k];
-                    // 質量必須大於 1.12 倍，且大球中心必須足夠靠近小球（小球中心涵蓋在之內或大面積覆蓋）
                     if (c1.mass >= c2.mass * 1.12) {
                         let r1 = Math.sqrt(c1.mass) * RADIUS_SCALE;
                         let r2 = Math.sqrt(c2.mass) * RADIUS_SCALE;
                         let dist = Math.hypot(c1.x - c2.x, c1.y - c2.y);
                         
-                        // 當大球半徑大於距離加上小球的一部分（代表大球完全或主要覆蓋住小球）
                         if (dist < r1 - r2 * 0.35 || dist < r1 * 0.6) {
                             c1.mass += c2.mass;
                             c1.squish = 1.25;
@@ -708,7 +798,7 @@ function render() {
 
         updateHUD(totalMass);
 
-        let targetScale = Math.max(0.25, 1 - (Math.sqrt(totalMass) * 0.0028)); // 配合大世界調整鏡頭縮放比例
+        let targetScale = Math.max(0.25, 1 - (Math.sqrt(totalMass) * 0.0028));
         camera.scale += (targetScale - camera.scale) * 0.06;
         camera.x += (avgX - camera.x) * 0.08;
         camera.y += (avgY - camera.y) * 0.08;
