@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>FR.gg - Preset Server Edition</title>
+    <title>FR.gg - Firebase Server Edition</title>
     <link rel="icon" type="image/jpeg" href="https://i.ibb.co/cXZ9bzt5/FR-gg.jpg">
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; touch-action: none; }
@@ -80,7 +80,6 @@
             #joystick-zone, #mobile-controls { display: none !important; }
         }
     </style>
-    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
 </head>
 <body>
 
@@ -100,7 +99,7 @@
                 </select>
             </div>
             <div class="btn-group">
-                <button class="btn" id="start-btn" onclick="connectToServer()">進入遊戲 / 建立房間</button>
+                <button class="btn" id="start-btn" onclick="joinGame()">進入遊戲</button>
             </div>
             <div id="status-msg"></div>
         </div>
@@ -130,28 +129,30 @@
         <div class="act-btn" id="btn-space">分</div>
     </div>
 
-<script>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+import { getDatabase, ref, set, get, update, onValue, remove, onDisconnect } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+
+const firebaseConfig = {
+    apiKey: "AIzaSyCCzmZs22Omv_RPAW47QXyfJI05kItr7Bw",
+    authDomain: "frgg-c5404.firebaseapp.com",
+    projectId: "frgg-c5404",
+    storageBucket: "frgg-c5404.firebasestorage.app",
+    messagingSenderId: "76341492532",
+    appId: "1:76341492532:web:ebf177bbec9d97b5c00361",
+    measurementId: "G-F9309K5K32"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getDatabase(app, "https://frgg-c5404-default-rtdb.asia-southeast1.firebasedatabase.app/");
+
 document.addEventListener('gesturestart', e => e.preventDefault());
 document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
 
-const GAME_SIG = "FR_GG_V3_PATCHED";
 const WORLD_SIZE = 3600;
 const PADDING = 50;
 const RADIUS_SCALE = 3.6;
 const RECOMBINE_TIME = 18000;
-
-const PEER_CONFIG = {
-    debug: 1,
-    config: {
-        iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' },
-            { urls: 'stun:global.stun.twilio.com:3478' },
-            { urls: 'turn:openrelay.metered.ca:80', username: 'openrelay', credential: 'openrelay' },
-            { urls: 'turn:openrelay.metered.ca:443', username: 'openrelay', credential: 'openrelay' }
-        ]
-    }
-};
 
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
@@ -169,143 +170,119 @@ function resizeCanvas() {
 window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
 
-let peer = null, conn = null, isHost = false;
 let myName = "玩家";
-let myId = '';
-let currentRoomId = '';
-
+let myId = 'p_' + Math.random().toString(36).substring(2, 9);
+let currentRoom = '';
+let isHost = false;
 let gameState = { players: {}, foods: [], viruses: [], ejected: [] };
 let playerOrder = [];
 let localInput = { angle: 0, speed: 0, split: false, eject: false };
-let lastSendTime = 0;
-
+let stateUnsubscribe = null;
 let hostInterval = null;
-let heartbeatInterval = null;
 
 let isPageVisible = true;
 document.addEventListener('visibilitychange', () => {
     isPageVisible = !document.hidden;
 });
 
-function cleanUpTimers() {
-    if (hostInterval) { clearInterval(hostInterval); hostInterval = null; }
-    if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null; }
-}
-
 function setStatus(msg) {
     document.getElementById('status-msg').innerText = msg;
 }
 
-// 智慧連線：如果該房號沒人建立，自己就當房主；如果有人建立了，就以客戶端加入！
-function connectToServer() {
+window.joinGame = async function() {
     myName = document.getElementById('nickname').value.trim() || "無名玩家";
-    let selectedCode = document.getElementById('server-select').value;
-    currentRoomId = 'frgg_' + selectedCode;
+    let serverCode = document.getElementById('server-select').value;
+    currentRoom = 'room_' + serverCode;
 
     document.getElementById('start-btn').disabled = true;
-    setStatus("正在嘗試連接伺服器...");
+    setStatus("正在連線至 Firebase 伺服器...");
 
-    cleanUpTimers();
-    if (peer) { try { peer.destroy(); } catch(e){} peer = null; }
+    const roomRef = ref(db, 'rooms/' + currentRoom);
+    
+    try {
+        const snapshot = await get(roomRef);
+        let roomData = snapshot.val();
+        let now = Date.now();
 
-    // 先嘗試以「房主 ID」進行註冊
-    isHost = true;
-    myId = currentRoomId;
-    peer = new Peer(currentRoomId, PEER_CONFIG);
-
-    peer.on('open', (id) => {
-        // 成功註冊該 ID，代表你是第一個進來的人 -> 成為房主！
-        setStatus("成功建立伺服器！你是房主。");
-        becomeHost(currentRoomId);
-        setTimeout(() => {
-            document.getElementById('lobby').style.display = 'none';
-            document.getElementById('start-btn').disabled = false;
-        }, 800);
-    });
-
-    peer.on('error', (err) => {
-        if (err.type === 'unavailable-id') {
-            // ID 已被佔用，代表房主已經在了 -> 改以「客戶端」身分去連線他！
-            setStatus("伺服器已有房主，正在加入遊戲...");
-            peer.destroy();
+        // 如果房主不存在或超過 6 秒沒更新心跳，自己成為房主
+        if (!roomData || !roomData.hostTimestamp || (now - roomData.hostTimestamp > 6000)) {
+            isHost = true;
+            setStatus("您已成為伺服器房主！");
             
-            isHost = false;
-            myId = 'p_' + Math.random().toString(36).substring(2, 9);
-            peer = new Peer(myId, PEER_CONFIG);
+            let initialFoods = [];
+            let initialViruses = [];
+            for (let i = 0; i < 400; i++) initialFoods.push(createFood());
+            for (let i = 0; i < 14; i++) initialViruses.push(createVirus());
 
-            peer.on('open', () => {
-                conn = peer.connect(currentRoomId, { metadata: { signature: GAME_SIG, clientName: myName }, reliable: true });
-                setupClientConn(conn, currentRoomId);
+            gameState = {
+                players: {
+                    [myId]: createPlayer(myId, myName)
+                },
+                foods: initialFoods,
+                viruses: initialViruses,
+                ejected: []
+            };
+
+            await set(roomRef, {
+                hostTimestamp: now,
+                state: gameState
             });
 
-            peer.on('error', (clientErr) => {
-                console.error("Client Error:", clientErr);
-                setStatus("連線失敗，請稍後再試。");
-                document.getElementById('start-btn').disabled = false;
-            });
+            startHostLoop();
         } else {
-            setStatus("連線發生錯誤：" + err.type);
-            document.getElementById('start-btn').disabled = false;
+            isHost = false;
+            setStatus("成功加入遊戲！");
+            
+            let state = roomData.state || { players: {}, foods: [], viruses: [], ejected: [] };
+            state.players[myId] = createPlayer(myId, myName);
+            
+            await update(roomRef, {
+                ['state/players/' + myId]: state.players[myId]
+            });
         }
-    });
-}
 
-function setupClientConn(c, targetHostId) {
-    let connectTimeout = setTimeout(() => {
-        if (!c || !c.open) {
-            setStatus("連線超時！");
-            document.getElementById('start-btn').disabled = false;
-        }
-    }, 8000);
+        // 監聽房間狀態
+        stateUnsubscribe = onValue(ref(db, 'rooms/' + currentRoom + '/state'), (snapshot) => {
+            let val = snapshot.val();
+            if (val) {
+                updateClientState(val);
+            }
+        });
 
-    c.on('open', () => {
-        clearTimeout(connectTimeout);
-        setStatus("成功加入遊戲！");
-        c.send({ type: 'JOIN', name: myName });
+        // 玩家離線時自動從資料庫移除
+        onDisconnect(ref(db, 'rooms/' + currentRoom + '/state/players/' + myId)).remove();
+
         document.getElementById('lobby').style.display = 'none';
         document.getElementById('start-btn').disabled = false;
 
-        heartbeatInterval = setInterval(() => {
-            if (c && c.open) c.send({ type: 'PING' });
-        }, 1500);
-    });
-
-    c.on('data', (data) => {
-        if (data.type === 'STATE') {
-            updateClientState(data.state);
-            if (data.playerOrder) playerOrder = data.playerOrder;
-        }
-    });
-
-    c.on('close', () => handleHostDisconnect());
-    c.on('error', () => handleHostDisconnect());
-}
-
-function handleHostDisconnect() {
-    if (isHost) return;
-    setStatus("房主已離線。");
-    returnToLobby();
+    } catch (err) {
+        console.error(err);
+        setStatus("連線失敗，請檢查網路後再試。");
+        document.getElementById('start-btn').disabled = false;
+    }
 }
 
 function updateClientState(newState) {
-    Object.keys(newState.players || {}).forEach(pId => {
-        let pNew = newState.players[pId];
-        let pOld = gameState.players ? gameState.players[pId] : null;
-        if (pOld && pOld.cells) {
-            pNew.cells.forEach((cNew, idx) => {
-                let cOld = pOld.cells[idx];
-                if (cOld && typeof cOld.renderX === 'number' && typeof cOld.renderY === 'number') {
-                    cNew.renderX = cOld.renderX + (cNew.x - cOld.renderX) * 0.35;
-                    cNew.renderY = cOld.renderY + (cNew.y - cOld.renderY) * 0.35;
-                } else {
-                    cNew.renderX = cNew.x; 
-                    cNew.renderY = cNew.y;
-                }
-            });
-        } else {
-            pNew.cells.forEach(cNew => { cNew.renderX = cNew.x; cNew.renderY = cNew.y; });
-        }
-    });
+    if (newState.players) {
+        Object.keys(newState.players).forEach(pId => {
+            let pNew = newState.players[pId];
+            let pOld = gameState.players ? gameState.players[pId] : null;
+            if (pOld && pOld.cells) {
+                pNew.cells.forEach((cNew, idx) => {
+                    let cOld = pOld.cells[idx];
+                    if (cOld && typeof cOld.renderX === 'number' && typeof cOld.renderY === 'number') {
+                        cNew.renderX = cOld.renderX + (cNew.x - cOld.renderX) * 0.35;
+                        cNew.renderY = cOld.renderY + (cNew.y - cOld.renderY) * 0.35;
+                    } else {
+                        cNew.renderX = cNew.x; 
+                        cNew.renderY = cNew.y;
+                    }
+                });
+            } else {
+                pNew.cells.forEach(cNew => { cNew.renderX = cNew.x; cNew.renderY = cNew.y; });
+            }
+        });
+    }
 
     gameState = {
         players: newState.players || {},
@@ -313,127 +290,40 @@ function updateClientState(newState) {
         viruses: newState.viruses || [],
         ejected: newState.ejected || []
     };
+
+    playerOrder = Object.values(gameState.players).map(p => ({
+        id: p.id, name: p.name,
+        totalMass: p.cells ? p.cells.reduce((sum, c) => sum + c.mass, 0) : 0
+    })).sort((a, b) => b.totalMass - a.totalMass);
 }
 
-function becomeHost(roomId) {
-    isHost = true;
-    myId = roomId;
+function startHostLoop() {
+    if (hostInterval) clearInterval(hostInterval);
+    
+    hostInterval = setInterval(async () => {
+        if (!isHost) return;
+        const now = Date.now();
 
-    if (!gameState.foods || gameState.foods.length === 0) {
-        gameState.foods = [];
-        gameState.viruses = [];
-        gameState.ejected = [];
-        for (let i = 0; i < 400; i++) gameState.foods.push(createFood());
-        for (let i = 0; i < 14; i++) gameState.viruses.push(createVirus());
-    }
-
-    if (!playerOrder.includes(myId)) playerOrder.unshift(myId);
-    gameState.players[myId] = gameState.players[myId] || createPlayer(myId, myName);
-
-    peer.on('connection', (c) => {
-        if (!c.metadata || c.metadata.signature !== GAME_SIG) { c.close(); return; }
-
-        c.on('data', (data) => {
-            if (data.type === 'PING') {
-                if (gameState.players[c.peer]) gameState.players[c.peer].lastSeen = Date.now();
-                return;
-            }
-            if (gameState.players[c.peer]) gameState.players[c.peer].lastSeen = Date.now();
-
-            if (data.type === 'JOIN' || data.type === 'RESPAWN') {
-                gameState.players[c.peer] = createPlayer(c.peer, data.name || c.metadata.clientName);
-                if (!playerOrder.includes(c.peer)) playerOrder.push(c.peer);
-            }
-            if (data.type === 'INPUT' && gameState.players[c.peer]) {
-                gameState.players[c.peer].input = data.input;
-            }
-        });
-
-        c.on('close', () => removePlayer(c.peer));
-        c.on('error', () => removePlayer(c.peer));
-    });
-
-    cleanUpTimers();
-    hostInterval = setInterval(updateHostLogic, 1000 / 30);
-}
-
-function removePlayer(pId) {
-    delete gameState.players[pId];
-    playerOrder = playerOrder.filter(id => id !== pId);
-}
-
-function respawn() {
-    document.getElementById('gameover').style.display = 'none';
-    if (isHost) {
-        gameState.players[myId] = createPlayer(myId, myName);
-    } else if (conn && conn.open) {
-        conn.send({ type: 'RESPAWN', name: myName });
-    }
-}
-
-function returnToLobby() {
-    document.getElementById('gameover').style.display = 'none';
-    document.getElementById('lobby').style.display = 'flex';
-    document.getElementById('start-btn').disabled = false;
-    setStatus("");
-    cleanUpTimers();
-    isHost = false;
-    if (peer) peer.destroy();
-}
-
-function createPlayer(id, name) {
-    return {
-        id, name,
-        color: `hsl(${Math.random() * 360}, 80%, 55%)`,
-        cells: [{
-            x: Math.random() * (WORLD_SIZE - PADDING * 2) + PADDING,
-            y: Math.random() * (WORLD_SIZE - PADDING * 2) + PADDING,
-            renderX: 0, renderY: 0,
-            mass: 20, vx: 0, vy: 0, splitTime: 0, squish: 1
-        }],
-        input: { angle: 0, speed: 0, split: false, eject: false },
-        lastSeen: Date.now()
-    };
-}
-
-function createFood() {
-    return {
-        x: Math.random() * (WORLD_SIZE - PADDING * 2) + PADDING,
-        y: Math.random() * (WORLD_SIZE - PADDING * 2) + PADDING,
-        color: `hsl(${Math.random() * 360}, 85%, 60%)`
-    };
-}
-
-function createVirus() {
-    return {
-        x: Math.random() * (WORLD_SIZE - PADDING * 4) + PADDING * 2,
-        y: Math.random() * (WORLD_SIZE - PADDING * 4) + PADDING * 2,
-        radius: 48, mass: 100
-    };
-}
-
-function addParticles(x, y, color, count = 8) {
-    for (let i = 0; i < count; i++) {
-        let ang = Math.random() * Math.PI * 2;
-        let spd = Math.random() * 5 + 2;
-        particles.push({
-            x, y, vx: Math.cos(ang) * spd, vy: Math.sin(ang) * spd,
-            life: 1.0, color, size: Math.random() * 3 + 2
-        });
-    }
-}
-
-function updateHostLogic() {
-    const now = Date.now();
-
-    Object.keys(gameState.players).forEach(pId => {
-        if (pId !== myId && now - gameState.players[pId].lastSeen > 6000) {
-            removePlayer(pId);
+        if (gameState.players[myId]) {
+            gameState.players[myId].input = { ...localInput };
+            localInput.split = false;
+            localInput.eject = false;
         }
-    });
 
+        updateHostPhysics(now);
+
+        try {
+            await set(ref(db, 'rooms/' + currentRoom), {
+                hostTimestamp: now,
+                state: gameState
+            });
+        } catch(e) {}
+    }, 1000 / 30);
+}
+
+function updateHostPhysics(now) {
     Object.values(gameState.players).forEach(p => {
-        let input = (p.id === myId) ? localInput : p.input;
+        let input = p.input || { angle: 0, speed: 0 };
 
         if (input.eject && now - (p.lastEject || 0) > 80) {
             p.cells.forEach(cell => {
@@ -489,8 +379,8 @@ function updateHostLogic() {
             cell.x = Math.max(radius + 10, Math.min(WORLD_SIZE - radius - 10, cell.x));
             cell.y = Math.max(radius + 10, Math.min(WORLD_SIZE - radius - 10, cell.y));
 
-            cell.renderX = cell.renderX ? cell.renderX + (cell.x - cell.renderX) * 0.4 : cell.x;
-            cell.renderY = cell.renderY ? cell.renderY + (cell.y - cell.renderY) * 0.4 : cell.y;
+            cell.renderX = cell.x;
+            cell.renderY = cell.y;
             
             if (cell.squish && cell.squish > 1) cell.squish += (1 - cell.squish) * 0.1;
 
@@ -530,37 +420,12 @@ function updateHostLogic() {
                         }
                     }
                     gameState.viruses[i] = createVirus();
-                    addParticles(v.x, v.y, '#33ff33', 20);
                     break;
                 }
             }
         });
 
         if (addedCells.length > 0) p.cells.push(...addedCells);
-
-        for (let i = 0; i < p.cells.length; i++) {
-            for (let j = i + 1; j < p.cells.length; j++) {
-                let c1 = p.cells[i], c2 = p.cells[j];
-                let dist = Math.hypot(c1.x - c2.x, c1.y - c2.y);
-                let r1 = Math.sqrt(c1.mass) * RADIUS_SCALE, r2 = Math.sqrt(c2.mass) * RADIUS_SCALE;
-                let minDist = r1 + r2;
-
-                if (now - c1.splitTime > RECOMBINE_TIME && now - c2.splitTime > RECOMBINE_TIME) {
-                    if (dist < r1) {
-                        c1.mass += c2.mass;
-                        c1.squish = 1.2;
-                        p.cells.splice(j, 1);
-                        j--;
-                    }
-                } else if (dist < minDist && dist > 0) {
-                    let overlap = minDist - dist;
-                    let nx = (c1.x - c2.x) / dist;
-                    let ny = (c1.y - c2.y) / dist;
-                    c1.x += nx * overlap * 0.15; c1.y += ny * overlap * 0.15;
-                    c2.x -= nx * overlap * 0.15; c2.y -= ny * overlap * 0.15;
-                }
-            }
-        }
     });
 
     gameState.ejected.forEach(e => {
@@ -578,6 +443,7 @@ function updateHostLogic() {
         for (let j = 0; j < allPlayers.length; j++) {
             if (i === j) continue;
             let p1 = allPlayers[i], p2 = allPlayers[j];
+            if (!p1.cells || !p2.cells) continue;
 
             p1.cells.forEach(c1 => {
                 for (let k = p2.cells.length - 1; k >= 0; k--) {
@@ -587,7 +453,6 @@ function updateHostLogic() {
                         if (Math.hypot(c1.x - c2.x, c1.y - c2.y) < r1 - 4) {
                             c1.mass += c2.mass;
                             c1.squish = 1.25;
-                            addParticles(c2.x, c2.y, p2.color, 16);
                             p2.cells.splice(k, 1);
                         }
                     }
@@ -598,28 +463,70 @@ function updateHostLogic() {
 
     Object.keys(gameState.players).forEach(pId => {
         let p = gameState.players[pId];
-        if (p.cells.length > 0) {
+        if (p.cells && p.cells.length > 0) {
             p.lastScore = p.cells.reduce((sum, c) => sum + c.mass, 0);
         } else {
             if (pId === myId && document.getElementById('gameover').style.display !== 'flex') {
                 triggerGameOver(p.lastScore || 0);
             }
-            removePlayer(pId);
+            delete gameState.players[pId];
         }
     });
-
-    if (peer && peer.connections) {
-        Object.keys(peer.connections).forEach(pId => {
-            peer.connections[pId].forEach(c => {
-                if (c && c.open) c.send({ type: 'STATE', state: gameState, playerOrder });
-            });
-        });
-    }
 }
 
 function triggerGameOver(score) {
     document.getElementById('final-score').innerText = Math.floor(score);
     document.getElementById('gameover').style.display = 'flex';
+}
+
+window.respawn = async function() {
+    document.getElementById('gameover').style.display = 'none';
+    if (gameState.players[myId]) {
+        gameState.players[myId] = createPlayer(myId, myName);
+    }
+}
+
+window.returnToLobby = function() {
+    if (stateUnsubscribe) stateUnsubscribe();
+    if (hostInterval) clearInterval(hostInterval);
+    if (currentRoom) {
+        remove(ref(db, 'rooms/' + currentRoom + '/state/players/' + myId));
+    }
+    document.getElementById('gameover').style.display = 'none';
+    document.getElementById('lobby').style.display = 'flex';
+    document.getElementById('start-btn').disabled = false;
+    setStatus("");
+    isHost = false;
+}
+
+function createPlayer(id, name) {
+    return {
+        id, name,
+        color: `hsl(${Math.random() * 360}, 80%, 55%)`,
+        cells: [{
+            x: Math.random() * (WORLD_SIZE - PADDING * 2) + PADDING,
+            y: Math.random() * (WORLD_SIZE - PADDING * 2) + PADDING,
+            renderX: 0, renderY: 0,
+            mass: 20, vx: 0, vy: 0, splitTime: 0, squish: 1
+        }],
+        input: { angle: 0, speed: 0, split: false, eject: false }
+    };
+}
+
+function createFood() {
+    return {
+        x: Math.random() * (WORLD_SIZE - PADDING * 2) + PADDING,
+        y: Math.random() * (WORLD_SIZE - PADDING * 2) + PADDING,
+        color: `hsl(${Math.random() * 360}, 85%, 60%)`
+    };
+}
+
+function createVirus() {
+    return {
+        x: Math.random() * (WORLD_SIZE - PADDING * 4) + PADDING * 2,
+        y: Math.random() * (WORLD_SIZE - PADDING * 4) + PADDING * 2,
+        radius: 48, mass: 100
+    };
 }
 
 function drawBackground() {
@@ -669,13 +576,8 @@ function updateHUD(totalMass) {
 
 function updateLeaderboard() {
     const listEl = document.getElementById('rank-list');
-    const sorted = Object.values(gameState.players || {}).map(p => ({
-        id: p.id, name: p.name,
-        totalMass: p.cells.reduce((sum, c) => sum + c.mass, 0)
-    })).sort((a, b) => b.totalMass - a.totalMass).slice(0, 5);
-
     let html = '';
-    sorted.forEach((p, i) => {
+    (playerOrder || []).slice(0, 5).forEach((p, i) => {
         html += `<li class="${p.id === myId ? 'me' : ''}"><span>${i + 1}. ${p.name}</span><span>${Math.floor(p.totalMass)}</span></li>`;
     });
     listEl.innerHTML = html;
@@ -689,7 +591,7 @@ function render() {
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    let me = gameState.players ? gameState.players[myId] : null;
+    let me = gameState.players && gameState.players[myId] ? gameState.players[myId] : null;
     if (me && me.cells && me.cells.length > 0) {
         let avgX = me.cells.reduce((sum, c) => sum + (c.renderX || c.x), 0) / me.cells.length;
         let avgY = me.cells.reduce((sum, c) => sum + (c.renderY || c.y), 0) / me.cells.length;
@@ -747,17 +649,6 @@ function render() {
         });
     }
 
-    for (let i = particles.length - 1; i >= 0; i--) {
-        let pt = particles[i];
-        ctx.fillStyle = pt.color;
-        ctx.globalAlpha = pt.life;
-        ctx.beginPath(); ctx.arc(pt.x, pt.y, pt.size, 0, Math.PI * 2); ctx.fill();
-        pt.x += pt.vx; pt.y += pt.vy;
-        pt.life -= 0.03;
-        if (pt.life <= 0) particles.splice(i, 1);
-    }
-    ctx.globalAlpha = 1.0;
-
     let renderCells = [];
     if (gameState.players) {
         Object.values(gameState.players).forEach(p => {
@@ -812,10 +703,7 @@ function render() {
 requestAnimationFrame(render);
 
 window.addEventListener('mousemove', (e) => {
-    mousePos.x = e.clientX;
-    mousePos.y = e.clientY;
-
-    let me = gameState.players ? gameState.players[myId] : null;
+    let me = gameState.players && gameState.players[myId] ? gameState.players[myId] : null;
     if (me && me.cells && me.cells.length > 0) {
         let screenCenterX = window.innerWidth / 2;
         let screenCenterY = window.innerHeight / 2;
@@ -827,15 +715,13 @@ window.addEventListener('mousemove', (e) => {
         localInput.angle = Math.atan2(dy, dx);
         let maxSensitivityRadius = 150 * camera.scale;
         localInput.speed = Math.min(1, Math.max(0, dist / maxSensitivityRadius));
-
-        sendInput();
     }
 });
 
 window.addEventListener('keydown', (e) => {
     if (e.repeat) return;
-    if (e.code === 'KeyW') { localInput.eject = true; sendInput(true); }
-    if (e.code === 'Space') { localInput.split = true; sendInput(true); }
+    if (e.code === 'KeyW') localInput.eject = true;
+    if (e.code === 'Space') localInput.split = true;
 });
 
 const joyZone = document.getElementById('joystick-zone');
@@ -877,7 +763,6 @@ function updateJoystick(touch) {
     joyKnob.style.transform = `translate(${Math.cos(angle)*limitDist}px, ${Math.sin(angle)*limitDist}px)`;
     localInput.angle = angle;
     localInput.speed = limitDist / maxDist;
-    sendInput();
 }
 
 function resetJoystick(e) {
@@ -886,7 +771,6 @@ function resetJoystick(e) {
             joyTouchId = null;
             joyKnob.style.transform = `translate(0px, 0px)`;
             localInput.speed = 0;
-            sendInput(true);
             break;
         }
     }
@@ -894,20 +778,8 @@ function resetJoystick(e) {
 joyZone.addEventListener('touchend', resetJoystick);
 joyZone.addEventListener('touchcancel', resetJoystick);
 
-document.getElementById('btn-w').addEventListener('touchstart', (e) => { e.preventDefault(); localInput.eject = true; sendInput(true); });
-document.getElementById('btn-space').addEventListener('touchstart', (e) => { e.preventDefault(); localInput.split = true; sendInput(true); });
-
-function sendInput(force = false) {
-    const now = Date.now();
-    if (force || now - lastSendTime > 30) {
-        if (!isHost && conn && conn.open) {
-            conn.send({ type: 'INPUT', input: localInput });
-            lastSendTime = now;
-        }
-        localInput.eject = false;
-        localInput.split = false;
-    }
-}
+document.getElementById('btn-w').addEventListener('touchstart', (e) => { e.preventDefault(); localInput.eject = true; });
+document.getElementById('btn-space').addEventListener('touchstart', (e) => { e.preventDefault(); localInput.split = true; });
 </script>
 </body>
 </html>
