@@ -134,7 +134,7 @@
     </div>
 
 <script>
-// ==================== 1. 初始化 Firebase 設定 ====================
+// ==================== 1. 初始化 Firebase 與即時分流人數監聽 ====================
 const firebaseConfig = {
     apiKey: "AIzaSyCCzmZs22Omv_RPAW47QXyfJI05kItr7Bw",
     authDomain: "frgg-c5404.firebaseapp.com",
@@ -148,7 +148,6 @@ const firebaseConfig = {
 firebase.initializeApp(firebaseConfig);
 const db = firebase.database();
 
-// 即時監聽並更新大廳各分流人數
 const serverSelect = document.getElementById('server-select');
 ['1111', '2222', '3333'].forEach(serverCode => {
     db.ref(`servers/frgg_${serverCode}/players`).on('value', (snapshot) => {
@@ -251,7 +250,6 @@ function connectToServer() {
 
     hostRef.once('value', (snapshot) => {
         let existingHostId = snapshot.val();
-
         if (!existingHostId) {
             claimHostAndStart(currentRoomId);
         } else {
@@ -308,7 +306,7 @@ function tryConnectToHost(hostId) {
     });
 
     peer.on('error', (err) => {
-        setStatus("無法連線至伺服器，正在嘗試切換建立伺服器...");
+        setStatus("無法連線至伺服器，正在嘗試建立備用伺服器...");
         claimHostAndStart(currentRoomId);
     });
 }
@@ -316,7 +314,7 @@ function tryConnectToHost(hostId) {
 function setupClientConn(c, targetHostId) {
     let connectTimeout = setTimeout(() => {
         if (!c || !c.open) {
-            setStatus("連線超時，改為建立伺服器...");
+            setStatus("連線超時，嘗試建立備用伺服器...");
             claimHostAndStart(currentRoomId);
         }
     }, 5000);
