@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>FR.gg</title>
+    <title>FR.gg - Host Migration Edition</title>
     <link rel="icon" type="image/jpeg" href="https://i.ibb.co/cXZ9bzt5/FR-gg.jpg">
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; touch-action: none; }
@@ -81,8 +81,8 @@
             <div class="input-group">
                 <label>選擇伺服器</label>
                 <select id="server-select">
-                    <option value="frgg_asia_v2_1">亞洲分區 1 (Asia 1)</option>
-                    <option value="frgg_asia_v2_2">亞洲分區 2 (Asia 2)</option>
+                    <option value="frgg_room_asia_1">亞洲分區 1 (Asia 1)</option>
+                    <option value="frgg_room_asia_2">亞洲分區 2 (Asia 2)</option>
                 </select>
             </div>
             <button class="btn" id="start-btn" onclick="startGame()">進入遊戲</button>
@@ -118,18 +118,22 @@
 document.addEventListener('gesturestart', e => e.preventDefault());
 document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
 
-const GAME_SIG = "FR_GG_V2_SECURE";
+const GAME_SIG = "FR_GG_V3_MIGRATE";
 const WORLD_SIZE = 3600;
 const PADDING = 50;
 const RADIUS_SCALE = 3.6;
 const RECOMBINE_TIME = 18000;
 
+// 擴充 STUN 伺服器列表以提升 P2P 穿透能力
 const PEER_CONFIG = {
     config: {
         iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'stun:stun1.l.google.com:19302' },
-            { urls: 'stun:stun2.l.google.com:19302' }
+            { urls: 'stun:stun2.l.google.com:19302' },
+            { urls: 'stun:stun3.l.google.com:19302' },
+            { urls: 'stun:stun4.l.google.com:19302' },
+            { urls: 'stun:global.stun.twilio.com:3478' }
         ]
     }
 };
@@ -153,8 +157,10 @@ resizeCanvas();
 let peer = null, conn = null, isHost = false;
 let myName = "玩家";
 let myId = '';
+let currentRoomId = '';
 
 let gameState = { players: {}, foods: [], viruses: [], ejected: [] };
+let playerOrder = []; // 紀錄玩家加入順序 [HostID, Client1, Client2, ...]
 let localInput = { angle: 0, speed: 0, split: false, eject: false };
 let lastSendTime = 0;
 let hostInterval = null;
@@ -166,71 +172,67 @@ function setStatus(msg) {
 
 function startGame() {
     myName = document.getElementById('nickname').value.trim() || "無名玩家";
-    const roomId = document.getElementById('server-select').value;
+    currentRoomId = document.getElementById('server-select').value;
     document.getElementById('start-btn').disabled = true;
-    setStatus("嘗試建立房間...");
+    setStatus("嘗試連線至伺服器...");
 
-    if (peer) {
-        peer.destroy();
-        peer = null;
-    }
+    initPeerAsHost(currentRoomId);
+}
 
-    peer = new Peer(roomId, PEER_CONFIG);
+function initPeerAsHost(targetId) {
+    if (peer) { peer.destroy(); peer = null; }
+
+    peer = new Peer(targetId, PEER_CONFIG);
 
     peer.on('open', () => {
-        setStatus("建立成功，成為房主！");
-        becomeHost(roomId);
+        setStatus("成功創建房間，成為房主！");
+        becomeHost(targetId);
         document.getElementById('lobby').style.display = 'none';
         document.getElementById('start-btn').disabled = false;
     });
 
     peer.on('error', (err) => {
         if (err.type === 'unavailable-id') {
-            setStatus("房間已存在，正在連線房主...");
-            connectAsClient(roomId);
+            setStatus("房間已存在，嘗試加入中...");
+            connectAsClient(targetId);
         } else {
             console.error("Peer Error:", err);
-            setStatus("連線錯誤：" + err.type);
+            setStatus("連線失敗：" + err.type);
             document.getElementById('start-btn').disabled = false;
         }
     });
 }
 
-function connectAsClient(roomId) {
+function connectAsClient(hostId) {
     isHost = false;
-    
-    // 關鍵修復：先完全關閉舊的 Peer 物件
-    if (peer) {
-        peer.destroy();
-        peer = null;
-    }
+    if (peer) { peer.destroy(); peer = null; }
 
     myId = 'p_' + Math.random().toString(36).substring(2, 9);
     peer = new Peer(myId, PEER_CONFIG);
 
     peer.on('open', () => {
-        conn = peer.connect(roomId, { metadata: { signature: GAME_SIG }, reliable: true });
-        setupClientConn(conn);
+        conn = peer.connect(hostId, { metadata: { signature: GAME_SIG, clientName: myName }, reliable: true });
+        setupClientConn(conn, hostId);
     });
 
     peer.on('error', (err) => {
         console.error("Client Peer Error:", err);
-        setStatus("加入房間失敗！");
+        setStatus("連線失敗，重新嘗試...");
         document.getElementById('start-btn').disabled = false;
     });
 }
 
-function setupClientConn(c) {
+function setupClientConn(c, hostId) {
     let connectTimeout = setTimeout(() => {
-        if (!c.open) {
-            setStatus("連線超時，請重試！");
-            document.getElementById('start-btn').disabled = false;
+        if (!c || !c.open) {
+            setStatus("連線超時，嘗試切換為房主...");
+            initPeerAsHost(currentRoomId);
         }
-    }, 8000);
+    }, 6000);
 
     c.on('open', () => {
         clearTimeout(connectTimeout);
-        setStatus("連線成功！");
+        setStatus("成功加入房間！");
         c.send({ type: 'JOIN', name: myName });
         document.getElementById('lobby').style.display = 'none';
         document.getElementById('start-btn').disabled = false;
@@ -238,25 +240,44 @@ function setupClientConn(c) {
         if (heartbeatInterval) clearInterval(heartbeatInterval);
         heartbeatInterval = setInterval(() => {
             if (c && c.open) c.send({ type: 'PING' });
-        }, 2000);
+        }, 1500);
     });
 
     c.on('data', (data) => {
         if (data.type === 'STATE') {
             updateClientState(data.state);
+            if (data.playerOrder) playerOrder = data.playerOrder;
         }
     });
 
     c.on('close', () => {
-        alert("與房主斷開連線！");
-        returnToLobby();
+        handleHostDisconnect();
     });
 
     c.on('error', (err) => {
         console.error("Connection Error:", err);
-        setStatus("連線失敗！");
-        document.getElementById('start-btn').disabled = false;
+        handleHostDisconnect();
     });
+}
+
+// 處理房主離線與伺服器轉移 (Host Migration)
+function handleHostDisconnect() {
+    if (isHost) return;
+    setStatus("房主已離線，正在轉移伺服器...");
+    
+    // 從順序列表中移除舊房主
+    playerOrder = playerOrder.filter(id => id !== currentRoomId);
+
+    if (playerOrder.length > 0 && playerOrder[0] === myId) {
+        // 我是下一個最優先的玩家，升級為房主！
+        console.log("升級為新房主");
+        becomeHost(currentRoomId);
+    } else {
+        // 我不是下一個房主，等待 1.5 秒後連線給新房主
+        setTimeout(() => {
+            connectAsClient(currentRoomId);
+        }, 1500);
+    }
 }
 
 function updateClientState(newState) {
@@ -282,10 +303,18 @@ function updateClientState(newState) {
 function becomeHost(roomId) {
     isHost = true;
     myId = roomId;
-    gameState = { players: {}, foods: [], viruses: [], ejected: [] };
-    for (let i = 0; i < 400; i++) gameState.foods.push(createFood());
-    for (let i = 0; i < 14; i++) gameState.viruses.push(createVirus());
-    gameState.players[myId] = createPlayer(myId, myName);
+
+    if (!gameState.foods || gameState.foods.length === 0) {
+        gameState = { players: {}, foods: [], viruses: [], ejected: [] };
+        for (let i = 0; i < 400; i++) gameState.foods.push(createFood());
+        for (let i = 0; i < 14; i++) gameState.viruses.push(createVirus());
+    }
+
+    if (!playerOrder.includes(myId)) {
+        playerOrder.unshift(myId);
+    }
+
+    gameState.players[myId] = gameState.players[myId] || createPlayer(myId, myName);
 
     peer.on('connection', (c) => {
         if (!c.metadata || c.metadata.signature !== GAME_SIG) { c.close(); return; }
@@ -296,20 +325,29 @@ function becomeHost(roomId) {
                 return;
             }
             if (gameState.players[c.peer]) gameState.players[c.peer].lastSeen = Date.now();
+
             if (data.type === 'JOIN' || data.type === 'RESPAWN') {
-                gameState.players[c.peer] = createPlayer(c.peer, data.name);
+                gameState.players[c.peer] = createPlayer(c.peer, data.name || c.metadata.clientName);
+                if (!playerOrder.includes(c.peer)) {
+                    playerOrder.push(c.peer);
+                }
             }
             if (data.type === 'INPUT' && gameState.players[c.peer]) {
                 gameState.players[c.peer].input = data.input;
             }
         });
 
-        c.on('close', () => { delete gameState.players[c.peer]; });
-        c.on('error', () => { delete gameState.players[c.peer]; });
+        c.on('close', () => { removePlayer(c.peer); });
+        c.on('error', () => { removePlayer(c.peer); });
     });
 
     if (hostInterval) clearInterval(hostInterval);
     hostInterval = setInterval(updateHostLogic, 1000 / 30);
+}
+
+function removePlayer(pId) {
+    delete gameState.players[pId];
+    playerOrder = playerOrder.filter(id => id !== pId);
 }
 
 function respawn() {
@@ -378,7 +416,9 @@ function updateHostLogic() {
     const now = Date.now();
 
     Object.keys(gameState.players).forEach(pId => {
-        if (pId !== myId && now - gameState.players[pId].lastSeen > 5000) delete gameState.players[pId];
+        if (pId !== myId && now - gameState.players[pId].lastSeen > 6000) {
+            removePlayer(pId);
+        }
     });
 
     Object.values(gameState.players).forEach(p => {
@@ -547,7 +587,7 @@ function updateHostLogic() {
                 if (p2.id === myId && document.getElementById('gameover').style.display !== 'flex') {
                     triggerGameOver(p2.lastScore || 0);
                 }
-                delete gameState.players[p2.id];
+                removePlayer(p2.id);
             } else {
                 p2.lastScore = p2.cells.reduce((sum, c) => sum + c.mass, 0);
             }
@@ -557,7 +597,7 @@ function updateHostLogic() {
     if (peer && peer.connections) {
         Object.keys(peer.connections).forEach(pId => {
             peer.connections[pId].forEach(c => {
-                if (c && c.open) c.send({ type: 'STATE', state: gameState });
+                if (c && c.open) c.send({ type: 'STATE', state: gameState, playerOrder });
             });
         });
     }
