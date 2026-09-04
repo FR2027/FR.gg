@@ -55,9 +55,8 @@
         #leaderboard li { font-size: 12px; font-weight: 600; display: flex; justify-content: space-between; margin-bottom: 4px; color: #cbd5e1; }
         #leaderboard li.me { color: #ffeb3b; }
 
-        #status-msg { margin-top: 12px; font-size: 13px; color: #00f2fe; }
+        #status-msg { margin-top: 12px; font-size: 13px; color: #00f2fe; min-height: 18px; }
 
-        /* 觸控控制項樣式 */
         #joystick-zone { position: absolute; bottom: 30px; left: 30px; width: 120px; height: 120px; border-radius: 50%; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.15); touch-action: none; z-index: 5; }
         #joystick-knob { position: absolute; top: 35px; left: 35px; width: 50px; height: 50px; border-radius: 50%; background: rgba(255,255,255,0.3); pointer-events: none; transition: background 0.2s; }
         #mobile-controls { position: absolute; bottom: 30px; right: 30px; display: flex; gap: 16px; z-index: 5; }
@@ -125,7 +124,6 @@ const PADDING = 50;
 const RADIUS_SCALE = 3.6;
 const RECOMBINE_TIME = 18000;
 
-// PeerJS ICE 設定 (加入 STUN 伺服器解決 NAT 穿透連線失敗)
 const PEER_CONFIG = {
     config: {
         iceServers: [
@@ -154,7 +152,7 @@ resizeCanvas();
 
 let peer = null, conn = null, isHost = false;
 let myName = "玩家";
-let myId = 'p_' + Math.random().toString(36).substring(2, 9);
+let myId = '';
 
 let gameState = { players: {}, foods: [], viruses: [], ejected: [] };
 let localInput = { angle: 0, speed: 0, split: false, eject: false };
@@ -170,15 +168,17 @@ function startGame() {
     myName = document.getElementById('nickname').value.trim() || "無名玩家";
     const roomId = document.getElementById('server-select').value;
     document.getElementById('start-btn').disabled = true;
-    setStatus("連線中...");
+    setStatus("嘗試建立房間...");
 
-    if (peer) peer.destroy();
+    if (peer) {
+        peer.destroy();
+        peer = null;
+    }
 
-    // 嘗試註冊為房主 (使用固定 Room ID)
     peer = new Peer(roomId, PEER_CONFIG);
 
     peer.on('open', () => {
-        setStatus("建立房間成功，成為房主！");
+        setStatus("建立成功，成為房主！");
         becomeHost(roomId);
         document.getElementById('lobby').style.display = 'none';
         document.getElementById('start-btn').disabled = false;
@@ -186,12 +186,11 @@ function startGame() {
 
     peer.on('error', (err) => {
         if (err.type === 'unavailable-id') {
-            // 房間已被建立，轉為 Client 模式加入
-            setStatus("房間已存在，嘗試加入中...");
+            setStatus("房間已存在，正在連線房主...");
             connectAsClient(roomId);
         } else {
             console.error("Peer Error:", err);
-            setStatus("連線失敗：" + err.type);
+            setStatus("連線錯誤：" + err.type);
             document.getElementById('start-btn').disabled = false;
         }
     });
@@ -199,6 +198,14 @@ function startGame() {
 
 function connectAsClient(roomId) {
     isHost = false;
+    
+    // 關鍵修復：先完全關閉舊的 Peer 物件
+    if (peer) {
+        peer.destroy();
+        peer = null;
+    }
+
+    myId = 'p_' + Math.random().toString(36).substring(2, 9);
     peer = new Peer(myId, PEER_CONFIG);
 
     peer.on('open', () => {
@@ -208,19 +215,26 @@ function connectAsClient(roomId) {
 
     peer.on('error', (err) => {
         console.error("Client Peer Error:", err);
-        setStatus("連線伺服器錯誤！");
+        setStatus("加入房間失敗！");
         document.getElementById('start-btn').disabled = false;
     });
 }
 
 function setupClientConn(c) {
+    let connectTimeout = setTimeout(() => {
+        if (!c.open) {
+            setStatus("連線超時，請重試！");
+            document.getElementById('start-btn').disabled = false;
+        }
+    }, 8000);
+
     c.on('open', () => {
+        clearTimeout(connectTimeout);
         setStatus("連線成功！");
         c.send({ type: 'JOIN', name: myName });
         document.getElementById('lobby').style.display = 'none';
         document.getElementById('start-btn').disabled = false;
 
-        // 心跳包機制防止連線中斷
         if (heartbeatInterval) clearInterval(heartbeatInterval);
         heartbeatInterval = setInterval(() => {
             if (c && c.open) c.send({ type: 'PING' });
@@ -240,6 +254,8 @@ function setupClientConn(c) {
 
     c.on('error', (err) => {
         console.error("Connection Error:", err);
+        setStatus("連線失敗！");
+        document.getElementById('start-btn').disabled = false;
     });
 }
 
@@ -361,7 +377,6 @@ function addParticles(x, y, color, count = 8) {
 function updateHostLogic() {
     const now = Date.now();
 
-    // 逾時踢出（5 秒未獲取心跳/封包）
     Object.keys(gameState.players).forEach(pId => {
         if (pId !== myId && now - gameState.players[pId].lastSeen > 5000) delete gameState.players[pId];
     });
@@ -723,7 +738,6 @@ function render() {
 }
 requestAnimationFrame(render);
 
-// 操控監聽
 window.addEventListener('mousemove', (e) => {
     mousePos.x = e.clientX;
     mousePos.y = e.clientY;
@@ -742,12 +756,11 @@ window.addEventListener('mousemove', (e) => {
 });
 
 window.addEventListener('keydown', (e) => {
-    if (e.repeat) return; // 防止長按重複發送問題
+    if (e.repeat) return;
     if (e.code === 'KeyW') { localInput.eject = true; sendInput(true); }
     if (e.code === 'Space') { localInput.split = true; sendInput(true); }
 });
 
-// 手機搖桿機制
 const joyZone = document.getElementById('joystick-zone');
 const joyKnob = document.getElementById('joystick-knob');
 let joyTouchId = null;
