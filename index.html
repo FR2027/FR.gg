@@ -3,11 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>FR.gg - Fully Patched Edition</title>
+    <title>FR.gg - Responsive Enhanced Edition</title>
     <link rel="icon" type="image/jpeg" href="https://i.ibb.co/cXZ9bzt5/FR-gg.jpg">
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; touch-action: none; }
-        body, html { width: 100%; height: 100%; overflow: hidden; background: #05070f; font-family: 'Segoe UI', Arial, sans-serif; position: fixed; }
+        body, html { width: 100%; height: 100%; overflow: hidden; background: #05070f; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; position: fixed; }
         canvas { display: block; width: 100vw; height: 100vh; position: absolute; top:0; left:0; z-index: 1; }
 
         .overlay-screen {
@@ -17,14 +17,14 @@
         }
         .panel {
             background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.12);
-            padding: 30px; border-radius: 20px; width: 90%; max-width: 360px; text-align: center;
+            padding: 26px; border-radius: 20px; width: 88%; max-width: 350px; text-align: center;
             box-shadow: 0 20px 50px rgba(0,0,0,0.6);
         }
-        .panel h1 { font-size: 36px; margin-bottom: 20px; color: #00f2fe; text-shadow: 0 0 15px rgba(0,242,254,0.6); letter-spacing: 2px; }
-        .input-group { margin-bottom: 16px; text-align: left; }
-        .input-group label { display: block; font-size: 13px; margin-bottom: 6px; color: #8a99ad; font-weight: 600; }
+        .panel h1 { font-size: 34px; margin-bottom: 18px; color: #00f2fe; text-shadow: 0 0 15px rgba(0,242,254,0.6); letter-spacing: 2px; }
+        .input-group { margin-bottom: 14px; text-align: left; }
+        .input-group label { display: block; font-size: 12px; margin-bottom: 6px; color: #8a99ad; font-weight: 600; }
         .input-group input, .input-group select {
-            width: 100%; padding: 12px 14px; border-radius: 10px; border: 1px solid #2a354f;
+            width: 100%; padding: 12px; border-radius: 10px; border: 1px solid #2a354f;
             background: #0d1222; color: #fff; font-size: 15px; outline: none; transition: border 0.2s;
         }
         .input-group input:focus, .input-group select:focus { border-color: #00f2fe; }
@@ -47,7 +47,7 @@
         #leaderboard {
             position: absolute; top: 16px; right: 16px; z-index: 5;
             background: rgba(0, 0, 0, 0.4); border: 1px solid rgba(255, 255, 255, 0.1);
-            padding: 12px 16px; border-radius: 12px; color: white; width: 170px;
+            padding: 12px 16px; border-radius: 12px; color: white; width: 160px;
             backdrop-filter: blur(8px); pointer-events: none;
         }
         #leaderboard h3 { font-size: 13px; letter-spacing: 1.5px; color: #00f2fe; margin-bottom: 8px; text-align: center; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 5px; }
@@ -55,14 +55,27 @@
         #leaderboard li { font-size: 12px; font-weight: 600; display: flex; justify-content: space-between; margin-bottom: 4px; color: #cbd5e1; }
         #leaderboard li.me { color: #ffeb3b; }
 
-        #status-msg { margin-top: 12px; font-size: 13px; color: #00f2fe; min-height: 18px; }
+        #status-msg { margin-top: 12px; font-size: 13px; color: #00f2fe; min-height: 18px; word-break: break-all; }
 
-        #joystick-zone { position: absolute; bottom: 30px; left: 30px; width: 120px; height: 120px; border-radius: 50%; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.15); touch-action: none; z-index: 5; }
-        #joystick-knob { position: absolute; top: 35px; left: 35px; width: 50px; height: 50px; border-radius: 50%; background: rgba(255,255,255,0.3); pointer-events: none; transition: background 0.2s; }
-        #mobile-controls { position: absolute; bottom: 30px; right: 30px; display: flex; gap: 16px; z-index: 5; }
-        .act-btn { width: 62px; height: 62px; border-radius: 50%; background: rgba(255,255,255,0.1); border: 2px solid rgba(255,255,255,0.25); color: white; font-weight: bold; font-size: 15px; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px); }
-        .act-btn:active { background: rgba(0, 242, 254, 0.4); border-color: #00f2fe; }
+        /* 行動端觸控介面 */
+        #joystick-zone {
+            position: absolute; bottom: 25px; left: 25px; width: 110px; height: 110px;
+            border-radius: 50%; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.2);
+            touch-action: none; z-index: 6; display: flex; justify-content: center; align-items: center;
+        }
+        #joystick-knob {
+            width: 44px; height: 44px; border-radius: 50%; background: rgba(0, 242, 254, 0.6);
+            pointer-events: none; transition: transform 0.05s ease-out; box-shadow: 0 0 10px rgba(0,242,254,0.5);
+        }
+        #mobile-controls { position: absolute; bottom: 25px; right: 25px; display: flex; gap: 14px; z-index: 6; }
+        .act-btn {
+            width: 58px; height: 58px; border-radius: 50%; background: rgba(255,255,255,0.12);
+            border: 2px solid rgba(255,255,255,0.3); color: white; font-weight: bold; font-size: 15px;
+            display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px);
+        }
+        .act-btn:active { background: rgba(0, 242, 254, 0.5); border-color: #00f2fe; }
 
+        /* 電腦版自動隱藏行動端控制按鈕 */
         @media (hover: hover) and (pointer: fine) {
             #joystick-zone, #mobile-controls { display: none !important; }
         }
@@ -124,7 +137,9 @@ const PADDING = 50;
 const RADIUS_SCALE = 3.6;
 const RECOMBINE_TIME = 18000;
 
+// 增強型 WebRTC 節點，提升手機與不同電信網路連接成功率
 const PEER_CONFIG = {
+    debug: 1,
     config: {
         iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
@@ -194,7 +209,7 @@ function startGame() {
 
 function initPeerAsHost(targetId) {
     cleanUpTimers();
-    if (peer) { peer.destroy(); peer = null; }
+    if (peer) { try { peer.destroy(); } catch(e){} peer = null; }
 
     peer = new Peer(targetId, PEER_CONFIG);
 
@@ -227,7 +242,7 @@ function initPeerAsHost(targetId) {
 function connectAsClient(hostId) {
     isHost = false;
     cleanUpTimers();
-    if (peer) { peer.destroy(); peer = null; }
+    if (peer) { try { peer.destroy(); } catch(e){} peer = null; }
 
     myId = 'p_' + Math.random().toString(36).substring(2, 9);
     peer = new Peer(myId, PEER_CONFIG);
@@ -314,7 +329,6 @@ function updateClientState(newState) {
         }
     });
 
-    // 強制補齊/同步 foods, viruses, ejected
     gameState = {
         players: newState.players || {},
         foods: newState.foods || [],
@@ -824,19 +838,26 @@ function render() {
 }
 requestAnimationFrame(render);
 
+// 優化後的滑鼠控制邏輯：支援靈敏度動態漸進計算
 window.addEventListener('mousemove', (e) => {
     mousePos.x = e.clientX;
     mousePos.y = e.clientY;
 
-    let worldMouseX = (e.clientX - window.innerWidth / 2) / camera.scale + camera.x;
-    let worldMouseY = (e.clientY - window.innerHeight / 2) / camera.scale + camera.y;
-
     let me = gameState.players ? gameState.players[myId] : null;
     if (me && me.cells && me.cells.length > 0) {
-        let avgX = me.cells.reduce((sum, c) => sum + c.x, 0) / me.cells.length;
-        let avgY = me.cells.reduce((sum, c) => sum + c.y, 0) / me.cells.length;
-        localInput.angle = Math.atan2(worldMouseY - avgY, worldMouseX - avgX);
-        localInput.speed = 1;
+        let screenCenterX = window.innerWidth / 2;
+        let screenCenterY = window.innerHeight / 2;
+        
+        let dx = e.clientX - screenCenterX;
+        let dy = e.clientY - screenCenterY;
+        let dist = Math.hypot(dx, dy);
+
+        localInput.angle = Math.atan2(dy, dx);
+        
+        // 滑鼠靠近螢幕中心時速度微調，拉遠時保持滿速 (最大感知半徑約為 150px)
+        let maxSensitivityRadius = 150 * camera.scale;
+        localInput.speed = Math.min(1, Math.max(0, dist / maxSensitivityRadius));
+
         sendInput();
     }
 });
@@ -847,40 +868,48 @@ window.addEventListener('keydown', (e) => {
     if (e.code === 'Space') { localInput.split = true; sendInput(true); }
 });
 
+// 手機搖桿優化邏輯
 const joyZone = document.getElementById('joystick-zone');
 const joyKnob = document.getElementById('joystick-knob');
 let joyTouchId = null;
 
 joyZone.addEventListener('touchstart', (e) => {
+    e.preventDefault();
     if (joyTouchId === null) {
         let touch = e.changedTouches[0];
         joyTouchId = touch.identifier;
+        updateJoystick(touch);
     }
-});
+}, { passive: false });
 
 joyZone.addEventListener('touchmove', (e) => {
+    e.preventDefault();
     for (let i = 0; i < e.changedTouches.length; i++) {
         let touch = e.changedTouches[i];
         if (touch.identifier === joyTouchId) {
-            let rect = joyZone.getBoundingClientRect();
-            let centerX = rect.left + rect.width / 2;
-            let centerY = rect.top + rect.height / 2;
-            
-            let dx = touch.clientX - centerX;
-            let dy = touch.clientY - centerY;
-            let dist = Math.hypot(dx, dy);
-            let maxDist = rect.width / 2;
-            let angle = Math.atan2(dy, dx);
-            let limitDist = Math.min(dist, maxDist);
-
-            joyKnob.style.transform = `translate(${Math.cos(angle)*limitDist}px, ${Math.sin(angle)*limitDist}px)`;
-            localInput.angle = angle;
-            localInput.speed = limitDist / maxDist;
-            sendInput();
+            updateJoystick(touch);
             break;
         }
     }
-});
+}, { passive: false });
+
+function updateJoystick(touch) {
+    let rect = joyZone.getBoundingClientRect();
+    let centerX = rect.left + rect.width / 2;
+    let centerY = rect.top + rect.height / 2;
+    
+    let dx = touch.clientX - centerX;
+    let dy = touch.clientY - centerY;
+    let dist = Math.hypot(dx, dy);
+    let maxDist = rect.width / 2;
+    let angle = Math.atan2(dy, dx);
+    let limitDist = Math.min(dist, maxDist);
+
+    joyKnob.style.transform = `translate(${Math.cos(angle)*limitDist}px, ${Math.sin(angle)*limitDist}px)`;
+    localInput.angle = angle;
+    localInput.speed = limitDist / maxDist;
+    sendInput();
+}
 
 function resetJoystick(e) {
     for (let i = 0; i < e.changedTouches.length; i++) {
