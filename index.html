@@ -134,7 +134,7 @@
     </div>
 
 <script>
-// ==================== 1. 初始化 Firebase 與即時分流人數監聽 ====================
+// ==================== Firebase 設定 ====================
 const firebaseConfig = {
     apiKey: "AIzaSyCCzmZs22Omv_RPAW47QXyfJI05kItr7Bw",
     authDomain: "frgg-c5404.firebaseapp.com",
@@ -148,6 +148,7 @@ const firebaseConfig = {
 firebase.initializeApp(firebaseConfig);
 const db = firebase.database();
 
+// 即時監聽各大廳分流人數
 const serverSelect = document.getElementById('server-select');
 ['1111', '2222', '3333'].forEach(serverCode => {
     db.ref(`servers/frgg_${serverCode}/players`).on('value', (snapshot) => {
@@ -230,7 +231,6 @@ function setStatus(msg) {
     document.getElementById('status-msg').innerText = msg;
 }
 
-// ==================== 2. 連線與自動房主選舉核心邏輯 ====================
 function connectToServer() {
     myName = document.getElementById('nickname').value.trim() || "無名玩家";
     currentServerCode = document.getElementById('server-select').value;
@@ -260,8 +260,8 @@ function connectToServer() {
 
 function claimHostAndStart(roomId) {
     isHost = true;
-    myId = roomId; 
-    setStatus("分流正在建立...");
+    myId = roomId;
+    setStatus("分流伺服器建立中...");
 
     const hostRef = db.ref(`servers/${roomId}/hostId`);
     hostRef.set(myId);
@@ -305,16 +305,16 @@ function tryConnectToHost(hostId) {
         setupClientConn(conn, hostId);
     });
 
-    peer.on('error', (err) => {
-        setStatus("無法連線至伺服器，正在嘗試建立備用伺服器...");
+    peer.on('error', () => {
+        setStatus("無法連線至房主，切換為自行建立伺服器...");
         claimHostAndStart(currentRoomId);
     });
 }
 
-function setupClientConn(c, targetHostId) {
+function setupClientConn(c) {
     let connectTimeout = setTimeout(() => {
         if (!c || !c.open) {
-            setStatus("連線超時，嘗試建立備用伺服器...");
+            setStatus("連線超時，嘗試切換為伺服器...");
             claimHostAndStart(currentRoomId);
         }
     }, 5000);
