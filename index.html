@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>FR.gg - Host Migration Edition</title>
+    <title>FR.gg - Fully Patched Edition</title>
     <link rel="icon" type="image/jpeg" href="https://i.ibb.co/cXZ9bzt5/FR-gg.jpg">
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; touch-action: none; }
@@ -118,13 +118,12 @@
 document.addEventListener('gesturestart', e => e.preventDefault());
 document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
 
-const GAME_SIG = "FR_GG_V3_MIGRATE";
+const GAME_SIG = "FR_GG_V3_PATCHED";
 const WORLD_SIZE = 3600;
 const PADDING = 50;
 const RADIUS_SCALE = 3.6;
 const RECOMBINE_TIME = 18000;
 
-// 擴充 STUN 伺服器列表以提升 P2P 穿透能力
 const PEER_CONFIG = {
     config: {
         iceServers: [
@@ -160,11 +159,26 @@ let myId = '';
 let currentRoomId = '';
 
 let gameState = { players: {}, foods: [], viruses: [], ejected: [] };
-let playerOrder = []; // 紀錄玩家加入順序 [HostID, Client1, Client2, ...]
+let playerOrder = [];
 let localInput = { angle: 0, speed: 0, split: false, eject: false };
 let lastSendTime = 0;
+
+// 計時器管理（避免記憶體洩漏）
 let hostInterval = null;
 let heartbeatInterval = null;
+let retryCount = 0;
+const MAX_RETRIES = 3;
+
+// 效能優化：頁面非監看狀態時暫停渲染
+let isPageVisible = true;
+document.addEventListener('visibilitychange', () => {
+    isPageVisible = !document.hidden;
+});
+
+function cleanUpTimers() {
+    if (hostInterval) { clearInterval(hostInterval); hostInterval = null; }
+    if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null; }
+}
 
 function setStatus(msg) {
     document.getElementById('status-msg').innerText = msg;
@@ -176,15 +190,18 @@ function startGame() {
     document.getElementById('start-btn').disabled = true;
     setStatus("嘗試連線至伺服器...");
 
+    retryCount = 0;
     initPeerAsHost(currentRoomId);
 }
 
 function initPeerAsHost(targetId) {
+    cleanUpTimers();
     if (peer) { peer.destroy(); peer = null; }
 
     peer = new Peer(targetId, PEER_CONFIG);
 
     peer.on('open', () => {
+        retryCount = 0;
         setStatus("成功創建房間，成為房主！");
         becomeHost(targetId);
         document.getElementById('lobby').style.display = 'none';
@@ -193,11 +210,18 @@ function initPeerAsHost(targetId) {
 
     peer.on('error', (err) => {
         if (err.type === 'unavailable-id') {
-            setStatus("房間已存在，嘗試加入中...");
-            connectAsClient(targetId);
+            // 防護 1：防止無窮遞迴連線 (Stack Overflow)
+            if (retryCount < MAX_RETRIES) {
+                retryCount++;
+                setStatus(`房間已存在，嘗試加入中 (${retryCount}/${MAX_RETRIES})...`);
+                connectAsClient(targetId);
+            } else {
+                setStatus("連線失敗，請嘗試更換伺服器頻道！");
+                document.getElementById('start-btn').disabled = false;
+            }
         } else {
             console.error("Peer Error:", err);
-            setStatus("連線失敗：" + err.type);
+            setStatus("連線錯誤：" + err.type);
             document.getElementById('start-btn').disabled = false;
         }
     });
@@ -205,6 +229,7 @@ function initPeerAsHost(targetId) {
 
 function connectAsClient(hostId) {
     isHost = false;
+    cleanUpTimers();
     if (peer) { peer.destroy(); peer = null; }
 
     myId = 'p_' + Math.random().toString(36).substring(2, 9);
@@ -217,7 +242,7 @@ function connectAsClient(hostId) {
 
     peer.on('error', (err) => {
         console.error("Client Peer Error:", err);
-        setStatus("連線失敗，重新嘗試...");
+        setStatus("加入房間失敗！");
         document.getElementById('start-btn').disabled = false;
     });
 }
@@ -225,19 +250,19 @@ function connectAsClient(hostId) {
 function setupClientConn(c, hostId) {
     let connectTimeout = setTimeout(() => {
         if (!c || !c.open) {
-            setStatus("連線超時，嘗試切換為房主...");
+            setStatus("連線超時，嘗試爭奪房主權限...");
             initPeerAsHost(currentRoomId);
         }
     }, 6000);
 
     c.on('open', () => {
         clearTimeout(connectTimeout);
+        retryCount = 0;
         setStatus("成功加入房間！");
         c.send({ type: 'JOIN', name: myName });
         document.getElementById('lobby').style.display = 'none';
         document.getElementById('start-btn').disabled = false;
 
-        if (heartbeatInterval) clearInterval(heartbeatInterval);
         heartbeatInterval = setInterval(() => {
             if (c && c.open) c.send({ type: 'PING' });
         }, 1500);
@@ -250,30 +275,22 @@ function setupClientConn(c, hostId) {
         }
     });
 
-    c.on('close', () => {
-        handleHostDisconnect();
-    });
-
+    c.on('close', () => handleHostDisconnect());
     c.on('error', (err) => {
         console.error("Connection Error:", err);
         handleHostDisconnect();
     });
 }
 
-// 處理房主離線與伺服器轉移 (Host Migration)
 function handleHostDisconnect() {
     if (isHost) return;
     setStatus("房主已離線，正在轉移伺服器...");
     
-    // 從順序列表中移除舊房主
     playerOrder = playerOrder.filter(id => id !== currentRoomId);
 
     if (playerOrder.length > 0 && playerOrder[0] === myId) {
-        // 我是下一個最優先的玩家，升級為房主！
-        console.log("升級為新房主");
         becomeHost(currentRoomId);
     } else {
-        // 我不是下一個房主，等待 1.5 秒後連線給新房主
         setTimeout(() => {
             connectAsClient(currentRoomId);
         }, 1500);
@@ -281,16 +298,19 @@ function handleHostDisconnect() {
 }
 
 function updateClientState(newState) {
+    // 防護 3：修正細胞數量改變時的陣列越界與 Null 崩潰
     Object.keys(newState.players).forEach(pId => {
         let pNew = newState.players[pId];
         let pOld = gameState.players[pId];
-        if (pOld) {
+        if (pOld && pOld.cells) {
             pNew.cells.forEach((cNew, idx) => {
-                if (pOld.cells[idx]) {
-                    cNew.renderX = pOld.cells[idx].renderX + (cNew.x - pOld.cells[idx].renderX) * 0.35;
-                    cNew.renderY = pOld.cells[idx].renderY + (cNew.y - pOld.cells[idx].renderY) * 0.35;
+                let cOld = pOld.cells[idx];
+                if (cOld && typeof cOld.renderX === 'number' && typeof cOld.renderY === 'number') {
+                    cNew.renderX = cOld.renderX + (cNew.x - cOld.renderX) * 0.35;
+                    cNew.renderY = cOld.renderY + (cNew.y - cOld.renderY) * 0.35;
                 } else {
-                    cNew.renderX = cNew.x; cNew.renderY = cNew.y;
+                    cNew.renderX = cNew.x; 
+                    cNew.renderY = cNew.y;
                 }
             });
         } else {
@@ -310,10 +330,7 @@ function becomeHost(roomId) {
         for (let i = 0; i < 14; i++) gameState.viruses.push(createVirus());
     }
 
-    if (!playerOrder.includes(myId)) {
-        playerOrder.unshift(myId);
-    }
-
+    if (!playerOrder.includes(myId)) playerOrder.unshift(myId);
     gameState.players[myId] = gameState.players[myId] || createPlayer(myId, myName);
 
     peer.on('connection', (c) => {
@@ -328,20 +345,18 @@ function becomeHost(roomId) {
 
             if (data.type === 'JOIN' || data.type === 'RESPAWN') {
                 gameState.players[c.peer] = createPlayer(c.peer, data.name || c.metadata.clientName);
-                if (!playerOrder.includes(c.peer)) {
-                    playerOrder.push(c.peer);
-                }
+                if (!playerOrder.includes(c.peer)) playerOrder.push(c.peer);
             }
             if (data.type === 'INPUT' && gameState.players[c.peer]) {
                 gameState.players[c.peer].input = data.input;
             }
         });
 
-        c.on('close', () => { removePlayer(c.peer); });
-        c.on('error', () => { removePlayer(c.peer); });
+        c.on('close', () => removePlayer(c.peer));
+        c.on('error', () => removePlayer(c.peer));
     });
 
-    if (hostInterval) clearInterval(hostInterval);
+    cleanUpTimers();
     hostInterval = setInterval(updateHostLogic, 1000 / 30);
 }
 
@@ -364,8 +379,7 @@ function returnToLobby() {
     document.getElementById('lobby').style.display = 'flex';
     document.getElementById('start-btn').disabled = false;
     setStatus("");
-    if (hostInterval) clearInterval(hostInterval);
-    if (heartbeatInterval) clearInterval(heartbeatInterval);
+    cleanUpTimers();
     isHost = false;
     if (peer) peer.destroy();
 }
@@ -562,6 +576,7 @@ function updateHostLogic() {
         }
     });
 
+    // 玩家間互吞碰撞檢查
     let allPlayers = Object.values(gameState.players);
     for (let i = 0; i < allPlayers.length; i++) {
         for (let j = 0; j < allPlayers.length; j++) {
@@ -582,17 +597,21 @@ function updateHostLogic() {
                     }
                 }
             });
-
-            if (p2.cells.length === 0) {
-                if (p2.id === myId && document.getElementById('gameover').style.display !== 'flex') {
-                    triggerGameOver(p2.lastScore || 0);
-                }
-                removePlayer(p2.id);
-            } else {
-                p2.lastScore = p2.cells.reduce((sum, c) => sum + c.mass, 0);
-            }
         }
     }
+
+    // 防護 4：獨立出來的死訊與 Game Over 判定（避免 Host 自己被吃或單人被病毒吞光時無回應）
+    Object.keys(gameState.players).forEach(pId => {
+        let p = gameState.players[pId];
+        if (p.cells.length > 0) {
+            p.lastScore = p.cells.reduce((sum, c) => sum + c.mass, 0);
+        } else {
+            if (pId === myId && document.getElementById('gameover').style.display !== 'flex') {
+                triggerGameOver(p.lastScore || 0);
+            }
+            removePlayer(pId);
+        }
+    });
 
     if (peer && peer.connections) {
         Object.keys(peer.connections).forEach(pId => {
@@ -668,6 +687,12 @@ function updateLeaderboard() {
 }
 
 function render() {
+    // 效能優化：分頁隱藏時停止 Canvas 繪製以節省資源
+    if (!isPageVisible) {
+        requestAnimationFrame(render);
+        return;
+    }
+
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
     let me = gameState.players[myId];
@@ -678,10 +703,11 @@ function render() {
 
         updateHUD(totalMass);
 
+        // 改進點：平滑 Camera 追蹤 Lerp 係數
         let targetScale = Math.max(0.35, 1 - (Math.sqrt(totalMass) * 0.0035));
-        camera.scale += (targetScale - camera.scale) * 0.08;
-        camera.x += (avgX - camera.x) * 0.1;
-        camera.y += (avgY - camera.y) * 0.1;
+        camera.scale += (targetScale - camera.scale) * 0.06;
+        camera.x += (avgX - camera.x) * 0.08;
+        camera.y += (avgY - camera.y) * 0.08;
     }
 
     ctx.save();
@@ -761,10 +787,15 @@ function render() {
             ctx.fillStyle = '#ffffff';
             ctx.shadowColor = 'rgba(0,0,0,0.8)';
             ctx.shadowBlur = 4;
-            ctx.font = `bold ${Math.max(13, r * 0.32)}px sans-serif`;
+
+            // 改進點：字體最小邊界保護 (避免 font-size <= 0)
+            let nameSize = Math.max(10, Math.floor(r * 0.32));
+            let massSize = Math.max(8, Math.floor(r * 0.24));
+
+            ctx.font = `bold ${nameSize}px sans-serif`;
             ctx.textAlign = 'center';
             ctx.fillText(c.name, 0, -(r * 0.08));
-            ctx.font = `600 ${Math.max(10, r * 0.24)}px sans-serif`;
+            ctx.font = `600 ${massSize}px sans-serif`;
             ctx.fillText(Math.floor(c.mass), 0, (r * 0.28));
 
             ctx.restore();
@@ -817,8 +848,12 @@ joyZone.addEventListener('touchmove', (e) => {
         let touch = e.changedTouches[i];
         if (touch.identifier === joyTouchId) {
             let rect = joyZone.getBoundingClientRect();
-            let dx = touch.clientX - (rect.left + rect.width / 2);
-            let dy = touch.clientY - (rect.top + rect.height / 2);
+            // 改進點：精確算出搖桿中心點
+            let centerX = rect.left + rect.width / 2;
+            let centerY = rect.top + rect.height / 2;
+            
+            let dx = touch.clientX - centerX;
+            let dy = touch.clientY - centerY;
             let dist = Math.hypot(dx, dy);
             let maxDist = rect.width / 2;
             let angle = Math.atan2(dy, dx);
@@ -857,6 +892,9 @@ function sendInput(force = false) {
             conn.send({ type: 'INPUT', input: localInput });
             lastSendTime = now;
         }
+        // 防護 5：單次發送後立即歸零 eject 與 split 標籤，避免連續誤觸發
+        localInput.eject = false;
+        localInput.split = false;
     }
 }
 </script>
