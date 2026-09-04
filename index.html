@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>FR.gg - Preset Server Edition (Fixed)</title>
+    <title>FR.gg</title>
     <link rel="icon" type="image/jpeg" href="https://i.ibb.co/cXZ9bzt5/FR-gg.jpg">
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; touch-action: none; }
@@ -92,15 +92,15 @@
                 <input type="text" id="nickname" placeholder="輸入名稱..." maxlength="10" value="玩家">
             </div>
             <div class="input-group">
-                <label>選擇伺服器房號</label>
+                <label>選擇伺服器分流</label>
                 <select id="server-select">
-                    <option value="1111">亞洲分區 1 (房號: 1111)</option>
-                    <option value="2222">亞洲分區 2 (房號: 2222)</option>
-                    <option value="3333">亞洲分區 3 (房號: 3333)</option>
+                    <option value="1111">主分流伺服器🔥</option>
+                    <option value="2222">第二分流伺服器</option>
+                    <option value="3333">第三分流伺服器</option>
                 </select>
             </div>
             <div class="btn-group">
-                <button class="btn" id="start-btn" onclick="connectToServer()">進入遊戲 / 建立房間</button>
+                <button class="btn" id="start-btn" onclick="connectToServer()">進入遊戲</button>
             </div>
             <div id="status-msg"></div>
         </div>
@@ -110,7 +110,7 @@
         <div class="panel">
             <h1 style="color: #ff3366;">已被吞噬</h1>
             <p style="margin-bottom: 20px; color: #a0aec0; font-size: 15px;">最終得分: <span id="final-score" style="color: #ffeb3b; font-weight: bold; font-size: 20px;">0</span></p>
-            <button class="btn" onclick="respawn()">再次挑戰</button>
+            <button class="btn" onclick="respawn()">重新加入</button>
             <button class="btn btn-sec" onclick="returnToLobby()">返回大廳</button>
         </div>
     </div>
@@ -134,11 +134,12 @@
 document.addEventListener('gesturestart', e => e.preventDefault());
 document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
 
-const GAME_SIG = "FR_GG_V3_PATCHED";
-const WORLD_SIZE = 3600;
+const GAME_SIG = "FR_GG_V4_FIXED";
+const WORLD_SIZE = 5000; // [已優化] 擴大地圖尺寸從 3600 改為 5000
 const PADDING = 50;
 const RADIUS_SCALE = 3.6;
 const RECOMBINE_TIME = 18000;
+const MAX_FOODS = 650; // 設定地圖最大食物維持數量
 
 const PEER_CONFIG = {
     debug: 1,
@@ -170,7 +171,7 @@ window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
 
 let peer = null, conn = null, isHost = false;
-let myName = "玩家";
+let myName = "未命名玩家";
 let myId = '';
 let currentRoomId = '';
 
@@ -212,7 +213,7 @@ function connectToServer() {
     peer = new Peer(currentRoomId, PEER_CONFIG);
 
     peer.on('open', (id) => {
-        setStatus("成功建立伺服器！你是房主。");
+        setStatus("成功加入伺服器");
         becomeHost(currentRoomId);
         setTimeout(() => {
             document.getElementById('lobby').style.display = 'none';
@@ -222,7 +223,7 @@ function connectToServer() {
 
     peer.on('error', (err) => {
         if (err.type === 'unavailable-id') {
-            setStatus("伺服器已有房主，正在加入遊戲...");
+            setStatus("伺服器連線中，等待加入遊戲...");
             peer.destroy();
             
             isHost = false;
@@ -279,7 +280,7 @@ function setupClientConn(c, targetHostId) {
 
 function handleHostDisconnect() {
     if (isHost) return;
-    setStatus("房主已離線。");
+    setStatus("伺服器斷線。");
     returnToLobby();
 }
 
@@ -319,8 +320,8 @@ function becomeHost(roomId) {
         gameState.foods = [];
         gameState.viruses = [];
         gameState.ejected = [];
-        for (let i = 0; i < 400; i++) gameState.foods.push(createFood());
-        for (let i = 0; i < 14; i++) gameState.viruses.push(createVirus());
+        for (let i = 0; i < MAX_FOODS; i++) gameState.foods.push(createFood());
+        for (let i = 0; i < 20; i++) gameState.viruses.push(createVirus());
     }
 
     if (!playerOrder.includes(myId)) playerOrder.unshift(myId);
@@ -422,8 +423,15 @@ function addParticles(x, y, color, count = 8) {
 function updateHostLogic() {
     const now = Date.now();
 
+    // [已優化] 食物定期動態補足機制：確保地圖上的食物數量維持在 MAX_FOODS
+    if (gameState.foods.length < MAX_FOODS) {
+        let diff = MAX_FOODS - gameState.foods.length;
+        for (let i = 0; i < diff; i++) {
+            gameState.foods.push(createFood());
+        }
+    }
+
     Object.keys(gameState.players).forEach(pId => {
-        // [已修正] 將逾時判定從 6 秒放寬至 15 秒，避免稍微卡頓就被判定斷線刪除
         if (pId !== myId && now - gameState.players[pId].lastSeen > 15000) {
             removePlayer(pId);
         }
@@ -495,7 +503,7 @@ function updateHostLogic() {
                 let f = gameState.foods[i];
                 if (Math.hypot(cell.x - f.x, cell.y - f.y) < radius) {
                     cell.mass += 1;
-                    gameState.foods[i] = createFood();
+                    gameState.foods.splice(i, 1); // 確實移除被吃的食物
                 }
             }
             
@@ -570,6 +578,7 @@ function updateHostLogic() {
         }
     });
 
+    // [已修復] 更加嚴謹且不會漏掉的玩家吞噬判定（修復「吃掉對方對方卻沒死」的問題）
     let allPlayers = Object.values(gameState.players);
     for (let i = 0; i < allPlayers.length; i++) {
         for (let j = 0; j < allPlayers.length; j++) {
@@ -579,9 +588,14 @@ function updateHostLogic() {
             p1.cells.forEach(c1 => {
                 for (let k = p2.cells.length - 1; k >= 0; k--) {
                     let c2 = p2.cells[k];
+                    // 質量必須大於 1.12 倍，且大球中心必須足夠靠近小球（小球中心涵蓋在之內或大面積覆蓋）
                     if (c1.mass >= c2.mass * 1.12) {
                         let r1 = Math.sqrt(c1.mass) * RADIUS_SCALE;
-                        if (Math.hypot(c1.x - c2.x, c1.y - c2.y) < r1 - 4) {
+                        let r2 = Math.sqrt(c2.mass) * RADIUS_SCALE;
+                        let dist = Math.hypot(c1.x - c2.x, c1.y - c2.y);
+                        
+                        // 當大球半徑大於距離加上小球的一部分（代表大球完全或主要覆蓋住小球）
+                        if (dist < r1 - r2 * 0.35 || dist < r1 * 0.6) {
                             c1.mass += c2.mass;
                             c1.squish = 1.25;
                             addParticles(c2.x, c2.y, p2.color, 16);
@@ -694,7 +708,7 @@ function render() {
 
         updateHUD(totalMass);
 
-        let targetScale = Math.max(0.35, 1 - (Math.sqrt(totalMass) * 0.0035));
+        let targetScale = Math.max(0.25, 1 - (Math.sqrt(totalMass) * 0.0028)); // 配合大世界調整鏡頭縮放比例
         camera.scale += (targetScale - camera.scale) * 0.06;
         camera.x += (avgX - camera.x) * 0.08;
         camera.y += (avgY - camera.y) * 0.08;
