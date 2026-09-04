@@ -84,7 +84,7 @@
                     <option value="us_server">美洲分流 (US Server)</option>
                 </select>
             </div>
-            <button class="btn" id="start-btn" onclick="startGame()">進入遊戲</button>
+            <button class="btn" id="start-btn">進入遊戲</button>
             <div id="status-msg"></div>
         </div>
     </div>
@@ -93,8 +93,8 @@
         <div class="panel">
             <h1 style="color: #ff3366;">已被吞噬</h1>
             <p style="margin-bottom: 20px; color: #a0aec0; font-size: 15px;">最終得分: <span id="final-score" style="color: #ffeb3b; font-weight: bold; font-size: 20px;">0</span></p>
-            <button class="btn" onclick="respawn()">再次挑戰</button>
-            <button class="btn btn-sec" onclick="returnToLobby()">返回大廳</button>
+            <button class="btn" id="respawn-btn">再次挑戰</button>
+            <button class="btn btn-sec" id="lobby-btn">返回大廳</button>
         </div>
     </div>
 
@@ -115,7 +115,7 @@
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-import { getDatabase, ref, set, onValue, push, onDisconnect, remove, update } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-rtdb.js";
+import { getDatabase, ref, set, onValue, onDisconnect, remove } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-rtdb.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyCCzmZs22Omv_RPAW47QXyfJI05kItr7Bw",
@@ -177,62 +177,63 @@ function setStatus(msg) {
     document.getElementById('status-msg').innerText = msg;
 }
 
-window.startGame = function() {
-    myName = sanitizeInput(document.getElementById('nickname').value);
-    currentServer = document.getElementById('server-select').value;
-    document.getElementById('start-btn').disabled = true;
-    setStatus("正在連線至 Firebase 分流伺服器...");
+function startGame() {
+    try {
+        myName = sanitizeInput(document.getElementById('nickname').value);
+        currentServer = document.getElementById('server-select').value;
+        document.getElementById('start-btn').disabled = true;
+        setStatus("正在連線至 Firebase 分流伺服器...");
 
-    serverRef = ref(db, 'servers/' + currentServer);
-    stateRef = ref(db, `servers/${currentServer}/state`);
-    inputsRef = ref(db, `servers/${currentServer}/inputs`);
-    hostRef = ref(db, `servers/${currentServer}/host`);
+        serverRef = ref(db, 'servers/' + currentServer);
+        stateRef = ref(db, `servers/${currentServer}/state`);
+        inputsRef = ref(db, `servers/${currentServer}/inputs`);
+        hostRef = ref(db, `servers/${currentServer}/host`);
 
-    // 註冊斷線清除
-    const myPlayerRef = ref(db, `servers/${currentServer}/state/players/${myId}`);
-    const myInputRef = ref(db, `servers/${currentServer}/inputs/${myId}`);
-    onDisconnect(myPlayerRef).remove();
-    onDisconnect(myInputRef).remove();
+        const myPlayerRef = ref(db, `servers/${currentServer}/state/players/${myId}`);
+        const myInputRef = ref(db, `servers/${currentServer}/inputs/${myId}`);
+        onDisconnect(myPlayerRef).remove();
+        onDisconnect(myInputRef).remove();
 
-    // 房主競爭與離線轉移機制
-    onValue(hostRef, (snapshot) => {
-        const currentHost = snapshot.val();
-        if (!currentHost) {
-            set(hostRef, myId);
-            onDisconnect(hostRef).remove();
-        } else if (currentHost === myId) {
-            if (!isHost) becomeHost();
-        } else {
-            isHost = false;
-            if (hostInterval) { clearInterval(hostInterval); hostInterval = null; }
-        }
-    });
+        onValue(hostRef, (snapshot) => {
+            const currentHost = snapshot.val();
+            if (!currentHost) {
+                set(hostRef, myId);
+                onDisconnect(hostRef).remove();
+            } else if (currentHost === myId) {
+                if (!isHost) becomeHost();
+            } else {
+                isHost = false;
+                if (hostInterval) { clearInterval(hostInterval); hostInterval = null; }
+            }
+        });
 
-    // 監聽伺服器廣播遊戲狀態
-    onValue(stateRef, (snapshot) => {
-        const data = snapshot.val();
-        if (data) updateClientState(data);
-    });
+        onValue(stateRef, (snapshot) => {
+            const data = snapshot.val();
+            if (data) updateClientState(data);
+        });
 
-    // 監聽玩家輸入 (僅 Host 使用)
-    onValue(inputsRef, (snapshot) => {
-        if (!isHost) return;
-        const inputs = snapshot.val();
-        if (inputs) {
-            Object.keys(inputs).forEach(pId => {
-                if (gameState.players[pId]) {
-                    gameState.players[pId].input = inputs[pId];
-                }
-            });
-        }
-    });
+        onValue(inputsRef, (snapshot) => {
+            if (!isHost) return;
+            const inputs = snapshot.val();
+            if (inputs) {
+                Object.keys(inputs).forEach(pId => {
+                    if (gameState.players[pId]) {
+                        gameState.players[pId].input = inputs[pId];
+                    }
+                });
+            }
+        });
 
-    // 初始化自身玩家
-    set(myPlayerRef, createPlayer(myId, myName));
+        set(myPlayerRef, createPlayer(myId, myName));
 
-    document.getElementById('lobby').style.display = 'none';
-    document.getElementById('start-btn').disabled = false;
-};
+        document.getElementById('lobby').style.display = 'none';
+        document.getElementById('start-btn').disabled = false;
+    } catch (e) {
+        console.error(e);
+        setStatus("連線發生錯誤，請重試");
+        document.getElementById('start-btn').disabled = false;
+    }
+}
 
 function updateClientState(newState) {
     if (!newState || !newState.players) return;
@@ -272,20 +273,24 @@ function becomeHost() {
     hostInterval = setInterval(updateHostLogic, 1000 / 30);
 }
 
-window.respawn = function() {
+function respawn() {
     document.getElementById('gameover').style.display = 'none';
     const myPlayerRef = ref(db, `servers/${currentServer}/state/players/${myId}`);
     set(myPlayerRef, createPlayer(myId, myName));
-};
+}
 
-window.returnToLobby = function() {
+function returnToLobby() {
     document.getElementById('gameover').style.display = 'none';
     document.getElementById('lobby').style.display = 'flex';
     document.getElementById('start-btn').disabled = false;
     setStatus("");
     if (hostInterval) clearInterval(hostInterval);
     isHost = false;
-};
+}
+
+document.getElementById('start-btn').addEventListener('click', startGame);
+document.getElementById('respawn-btn').addEventListener('click', respawn);
+document.getElementById('lobby-btn').addEventListener('click', returnToLobby);
 
 function createPlayer(id, name) {
     return {
@@ -509,7 +514,6 @@ function updateHostLogic() {
         }
     });
 
-    // 廣播最新狀態至 Firebase
     set(stateRef, gameState);
 }
 
