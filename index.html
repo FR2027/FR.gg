@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>FR.gg - Responsive Enhanced Edition</title>
+    <title>FR.gg - Production Multiplayer Edition</title>
     <link rel="icon" type="image/jpeg" href="https://i.ibb.co/cXZ9bzt5/FR-gg.jpg">
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; touch-action: none; }
@@ -57,7 +57,6 @@
 
         #status-msg { margin-top: 12px; font-size: 13px; color: #00f2fe; min-height: 18px; word-break: break-all; }
 
-        /* 行動端觸控介面 */
         #joystick-zone {
             position: absolute; bottom: 25px; left: 25px; width: 110px; height: 110px;
             border-radius: 50%; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.2);
@@ -75,7 +74,6 @@
         }
         .act-btn:active { background: rgba(0, 242, 254, 0.5); border-color: #00f2fe; }
 
-        /* 電腦版自動隱藏行動端控制按鈕 */
         @media (hover: hover) and (pointer: fine) {
             #joystick-zone, #mobile-controls { display: none !important; }
         }
@@ -92,10 +90,11 @@
                 <input type="text" id="nickname" placeholder="輸入名稱..." maxlength="10" value="玩家">
             </div>
             <div class="input-group">
-                <label>選擇伺服器</label>
+                <label>選擇伺服器房號</label>
                 <select id="server-select">
                     <option value="frgg_room_asia_1">亞洲分區 1 (Asia 1)</option>
                     <option value="frgg_room_asia_2">亞洲分區 2 (Asia 2)</option>
+                    <option value="frgg_room_global_1">環球頻道 1 (Global 1)</option>
                 </select>
             </div>
             <button class="btn" id="start-btn" onclick="startGame()">進入遊戲</button>
@@ -137,7 +136,7 @@ const PADDING = 50;
 const RADIUS_SCALE = 3.6;
 const RECOMBINE_TIME = 18000;
 
-// 增強型 WebRTC 節點，提升手機與不同電信網路連接成功率
+// 配置包含 STUN 與開放式 TURN 中繼伺服器（解決跨電信網路與防火牆阻擋）
 const PEER_CONFIG = {
     debug: 1,
     config: {
@@ -145,9 +144,23 @@ const PEER_CONFIG = {
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'stun:stun1.l.google.com:19302' },
             { urls: 'stun:stun2.l.google.com:19302' },
-            { urls: 'stun:stun3.l.google.com:19302' },
-            { urls: 'stun:stun4.l.google.com:19302' },
-            { urls: 'stun:global.stun.twilio.com:3478' }
+            { urls: 'stun:global.stun.twilio.com:3478' },
+            // TURN 中繼伺服器（專治 4G/5G 與雙方 NAT 打洞失敗問題）
+            {
+                urls: 'turn:openrelay.metered.ca:80',
+                username: 'openrelay',
+                credential: 'openrelay'
+            },
+            {
+                urls: 'turn:openrelay.metered.ca:443',
+                username: 'openrelay',
+                credential: 'openrelay'
+            },
+            {
+                urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+                username: 'openrelay',
+                credential: 'openrelay'
+            }
         ]
     }
 };
@@ -201,7 +214,7 @@ function startGame() {
     myName = document.getElementById('nickname').value.trim() || "無名玩家";
     currentRoomId = document.getElementById('server-select').value;
     document.getElementById('start-btn').disabled = true;
-    setStatus("嘗試連線至伺服器...");
+    setStatus("嘗試連線至伺服器中繼節點...");
 
     retryCount = 0;
     initPeerAsHost(currentRoomId);
@@ -215,7 +228,7 @@ function initPeerAsHost(targetId) {
 
     peer.on('open', () => {
         retryCount = 0;
-        setStatus("成功創建房間，成為房主！");
+        setStatus("成功建立房間，成為主辦玩家 (Host)！");
         becomeHost(targetId);
         document.getElementById('lobby').style.display = 'none';
         document.getElementById('start-btn').disabled = false;
@@ -225,16 +238,16 @@ function initPeerAsHost(targetId) {
         if (err.type === 'unavailable-id') {
             if (retryCount < MAX_RETRIES) {
                 retryCount++;
-                setStatus(`房間已存在，嘗試加入中 (${retryCount}/${MAX_RETRIES})...`);
+                setStatus(`房間已存在，嘗試加入房主中 (${retryCount}/${MAX_RETRIES})...`);
                 connectAsClient(targetId);
             } else {
-                setStatus("連線失敗，請嘗試更換伺服器頻道！");
+                setStatus("連線超時，請嘗試選擇其他房號頻道！");
                 document.getElementById('start-btn').disabled = false;
             }
         } else {
             console.error("Peer Error:", err);
-            setStatus("連線錯誤：" + err.type);
-            document.getElementById('start-btn').disabled = false;
+            setStatus("連線遭遇阻擋，正在自動降級連線中...");
+            connectAsClient(targetId);
         }
     });
 }
@@ -254,7 +267,7 @@ function connectAsClient(hostId) {
 
     peer.on('error', (err) => {
         console.error("Client Peer Error:", err);
-        setStatus("加入房間失敗！");
+        setStatus("加入房間失敗，正在重試...");
         document.getElementById('start-btn').disabled = false;
     });
 }
@@ -262,15 +275,15 @@ function connectAsClient(hostId) {
 function setupClientConn(c, hostId) {
     let connectTimeout = setTimeout(() => {
         if (!c || !c.open) {
-            setStatus("連線超時，嘗試爭奪房主權限...");
+            setStatus("無法連上房主，正在嘗試爭奪房主權限...");
             initPeerAsHost(currentRoomId);
         }
-    }, 6000);
+    }, 7000);
 
     c.on('open', () => {
         clearTimeout(connectTimeout);
         retryCount = 0;
-        setStatus("成功加入房間！");
+        setStatus("成功進入遊戲頻道！");
         c.send({ type: 'JOIN', name: myName });
         document.getElementById('lobby').style.display = 'none';
         document.getElementById('start-btn').disabled = false;
@@ -296,7 +309,7 @@ function setupClientConn(c, hostId) {
 
 function handleHostDisconnect() {
     if (isHost) return;
-    setStatus("房主已離線，正在轉移伺服器...");
+    setStatus("房主斷線，正在自動遷移主機...");
     
     playerOrder = playerOrder.filter(id => id !== currentRoomId);
 
@@ -305,7 +318,7 @@ function handleHostDisconnect() {
     } else {
         setTimeout(() => {
             connectAsClient(currentRoomId);
-        }, 1500);
+        }, 1200);
     }
 }
 
@@ -742,7 +755,6 @@ function render() {
     let viewW = (window.innerWidth / camera.scale) / 2 + 100;
     let viewH = (window.innerHeight / camera.scale) / 2 + 100;
 
-    // 繪製食物
     if (gameState.foods) {
         gameState.foods.forEach(f => {
             if (Math.abs(f.x - camera.x) < viewW && Math.abs(f.y - camera.y) < viewH) {
@@ -752,7 +764,6 @@ function render() {
         });
     }
 
-    // 繪製噴出的質量塊
     if (gameState.ejected) {
         gameState.ejected.forEach(e => {
             if (Math.abs(e.x - camera.x) < viewW && Math.abs(e.y - camera.y) < viewH) {
@@ -763,7 +774,6 @@ function render() {
         });
     }
 
-    // 繪製綠色病毒
     if (gameState.viruses) {
         gameState.viruses.forEach(v => {
             if (Math.abs(v.x - camera.x) < viewW + v.radius && Math.abs(v.y - camera.y) < viewH + v.radius) {
@@ -772,7 +782,6 @@ function render() {
         });
     }
 
-    // 粒子效果
     for (let i = particles.length - 1; i >= 0; i--) {
         let pt = particles[i];
         ctx.fillStyle = pt.color;
@@ -784,7 +793,6 @@ function render() {
     }
     ctx.globalAlpha = 1.0;
 
-    // 繪製玩家細胞
     let renderCells = [];
     if (gameState.players) {
         Object.values(gameState.players).forEach(p => {
@@ -838,7 +846,6 @@ function render() {
 }
 requestAnimationFrame(render);
 
-// 優化後的滑鼠控制邏輯：支援靈敏度動態漸進計算
 window.addEventListener('mousemove', (e) => {
     mousePos.x = e.clientX;
     mousePos.y = e.clientY;
@@ -853,8 +860,6 @@ window.addEventListener('mousemove', (e) => {
         let dist = Math.hypot(dx, dy);
 
         localInput.angle = Math.atan2(dy, dx);
-        
-        // 滑鼠靠近螢幕中心時速度微調，拉遠時保持滿速 (最大感知半徑約為 150px)
         let maxSensitivityRadius = 150 * camera.scale;
         localInput.speed = Math.min(1, Math.max(0, dist / maxSensitivityRadius));
 
@@ -868,7 +873,6 @@ window.addEventListener('keydown', (e) => {
     if (e.code === 'Space') { localInput.split = true; sendInput(true); }
 });
 
-// 手機搖桿優化邏輯
 const joyZone = document.getElementById('joystick-zone');
 const joyKnob = document.getElementById('joystick-knob');
 let joyTouchId = null;
