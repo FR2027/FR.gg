@@ -55,6 +55,8 @@
         #leaderboard li { font-size: 12px; font-weight: 600; display: flex; justify-content: space-between; margin-bottom: 4px; color: #cbd5e1; }
         #leaderboard li.me { color: #ffeb3b; }
 
+        #status-msg { margin-top: 12px; font-size: 13px; color: #00f2fe; }
+
         /* 觸控控制項樣式 */
         #joystick-zone { position: absolute; bottom: 30px; left: 30px; width: 120px; height: 120px; border-radius: 50%; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.15); touch-action: none; z-index: 5; }
         #joystick-knob { position: absolute; top: 35px; left: 35px; width: 50px; height: 50px; border-radius: 50%; background: rgba(255,255,255,0.3); pointer-events: none; transition: background 0.2s; }
@@ -62,11 +64,8 @@
         .act-btn { width: 62px; height: 62px; border-radius: 50%; background: rgba(255,255,255,0.1); border: 2px solid rgba(255,255,255,0.25); color: white; font-weight: bold; font-size: 15px; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px); }
         .act-btn:active { background: rgba(0, 242, 254, 0.4); border-color: #00f2fe; }
 
-        /* 隱藏邏輯：當設備支援滑鼠 (Mouse Hover) 時，預設隱藏手機控制項 */
         @media (hover: hover) and (pointer: fine) {
-            #joystick-zone, #mobile-controls {
-                display: none !important;
-            }
+            #joystick-zone, #mobile-controls { display: none !important; }
         }
     </style>
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
@@ -87,7 +86,8 @@
                     <option value="frgg_asia_v2_2">亞洲分區 2 (Asia 2)</option>
                 </select>
             </div>
-            <button class="btn" onclick="startGame()">進入遊戲</button>
+            <button class="btn" id="start-btn" onclick="startGame()">進入遊戲</button>
+            <div id="status-msg"></div>
         </div>
     </div>
 
@@ -125,6 +125,17 @@ const PADDING = 50;
 const RADIUS_SCALE = 3.6;
 const RECOMBINE_TIME = 18000;
 
+// PeerJS ICE 設定 (加入 STUN 伺服器解決 NAT 穿透連線失敗)
+const PEER_CONFIG = {
+    config: {
+        iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'stun:stun2.l.google.com:19302' }
+        ]
+    }
+};
+
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 let dpr = window.devicePixelRatio || 1;
@@ -143,50 +154,77 @@ resizeCanvas();
 
 let peer = null, conn = null, isHost = false;
 let myName = "玩家";
-let myId = 'peer_' + Math.random().toString(36).substring(2, 9);
+let myId = 'p_' + Math.random().toString(36).substring(2, 9);
 
 let gameState = { players: {}, foods: [], viruses: [], ejected: [] };
 let localInput = { angle: 0, speed: 0, split: false, eject: false };
 let lastSendTime = 0;
 let hostInterval = null;
+let heartbeatInterval = null;
+
+function setStatus(msg) {
+    document.getElementById('status-msg').innerText = msg;
+}
 
 function startGame() {
     myName = document.getElementById('nickname').value.trim() || "無名玩家";
-    const serverId = document.getElementById('server-select').value;
-    document.getElementById('lobby').style.display = 'none';
+    const roomId = document.getElementById('server-select').value;
+    document.getElementById('start-btn').disabled = true;
+    setStatus("連線中...");
 
     if (peer) peer.destroy();
 
-    // 先嘗試當 Host (使用固定 roomId)
-    peer = new Peer(serverId);
+    // 嘗試註冊為房主 (使用固定 Room ID)
+    peer = new Peer(roomId, PEER_CONFIG);
 
     peer.on('open', () => {
-        // 成功取得 roomId 表示目前無房主，建立新房間
-        becomeHost(serverId);
+        setStatus("建立房間成功，成為房主！");
+        becomeHost(roomId);
+        document.getElementById('lobby').style.display = 'none';
+        document.getElementById('start-btn').disabled = false;
     });
 
     peer.on('error', (err) => {
         if (err.type === 'unavailable-id') {
-            // ID 被佔用，代表房主已存在，轉為 Client 模式
-            connectAsClient(serverId);
+            // 房間已被建立，轉為 Client 模式加入
+            setStatus("房間已存在，嘗試加入中...");
+            connectAsClient(roomId);
         } else {
             console.error("Peer Error:", err);
+            setStatus("連線失敗：" + err.type);
+            document.getElementById('start-btn').disabled = false;
         }
     });
 }
 
-function connectAsClient(serverId) {
+function connectAsClient(roomId) {
     isHost = false;
-    peer = new Peer(myId);
+    peer = new Peer(myId, PEER_CONFIG);
+
     peer.on('open', () => {
-        conn = peer.connect(serverId, { metadata: { signature: GAME_SIG }, reliable: false });
+        conn = peer.connect(roomId, { metadata: { signature: GAME_SIG }, reliable: true });
         setupClientConn(conn);
+    });
+
+    peer.on('error', (err) => {
+        console.error("Client Peer Error:", err);
+        setStatus("連線伺服器錯誤！");
+        document.getElementById('start-btn').disabled = false;
     });
 }
 
 function setupClientConn(c) {
     c.on('open', () => {
+        setStatus("連線成功！");
         c.send({ type: 'JOIN', name: myName });
+        document.getElementById('lobby').style.display = 'none';
+        document.getElementById('start-btn').disabled = false;
+
+        // 心跳包機制防止連線中斷
+        if (heartbeatInterval) clearInterval(heartbeatInterval);
+        heartbeatInterval = setInterval(() => {
+            if (c && c.open) c.send({ type: 'PING' });
+        }, 2000);
     });
 
     c.on('data', (data) => {
@@ -196,8 +234,12 @@ function setupClientConn(c) {
     });
 
     c.on('close', () => {
-        alert("與伺服器斷開連線");
+        alert("與房主斷開連線！");
         returnToLobby();
+    });
+
+    c.on('error', (err) => {
+        console.error("Connection Error:", err);
     });
 }
 
@@ -210,13 +252,12 @@ function updateClientState(newState) {
                 if (pOld.cells[idx]) {
                     cNew.renderX = pOld.cells[idx].renderX + (cNew.x - pOld.cells[idx].renderX) * 0.35;
                     cNew.renderY = pOld.cells[idx].renderY + (cNew.y - pOld.cells[idx].renderY) * 0.35;
-                    cNew.squish = pOld.cells[idx].squish || 1;
                 } else {
-                    cNew.renderX = cNew.x; cNew.renderY = cNew.y; cNew.squish = 1;
+                    cNew.renderX = cNew.x; cNew.renderY = cNew.y;
                 }
             });
         } else {
-            pNew.cells.forEach(cNew => { cNew.renderX = cNew.x; cNew.renderY = cNew.y; cNew.squish = 1; });
+            pNew.cells.forEach(cNew => { cNew.renderX = cNew.x; cNew.renderY = cNew.y; });
         }
     });
     gameState = newState;
@@ -224,6 +265,7 @@ function updateClientState(newState) {
 
 function becomeHost(roomId) {
     isHost = true;
+    myId = roomId;
     gameState = { players: {}, foods: [], viruses: [], ejected: [] };
     for (let i = 0; i < 400; i++) gameState.foods.push(createFood());
     for (let i = 0; i < 14; i++) gameState.viruses.push(createVirus());
@@ -233,6 +275,10 @@ function becomeHost(roomId) {
         if (!c.metadata || c.metadata.signature !== GAME_SIG) { c.close(); return; }
 
         c.on('data', (data) => {
+            if (data.type === 'PING') {
+                if (gameState.players[c.peer]) gameState.players[c.peer].lastSeen = Date.now();
+                return;
+            }
             if (gameState.players[c.peer]) gameState.players[c.peer].lastSeen = Date.now();
             if (data.type === 'JOIN' || data.type === 'RESPAWN') {
                 gameState.players[c.peer] = createPlayer(c.peer, data.name);
@@ -241,7 +287,9 @@ function becomeHost(roomId) {
                 gameState.players[c.peer].input = data.input;
             }
         });
+
         c.on('close', () => { delete gameState.players[c.peer]; });
+        c.on('error', () => { delete gameState.players[c.peer]; });
     });
 
     if (hostInterval) clearInterval(hostInterval);
@@ -260,7 +308,10 @@ function respawn() {
 function returnToLobby() {
     document.getElementById('gameover').style.display = 'none';
     document.getElementById('lobby').style.display = 'flex';
+    document.getElementById('start-btn').disabled = false;
+    setStatus("");
     if (hostInterval) clearInterval(hostInterval);
+    if (heartbeatInterval) clearInterval(heartbeatInterval);
     isHost = false;
     if (peer) peer.destroy();
 }
@@ -310,15 +361,14 @@ function addParticles(x, y, color, count = 8) {
 function updateHostLogic() {
     const now = Date.now();
 
-    // 逾時踢出閒置玩家
+    // 逾時踢出（5 秒未獲取心跳/封包）
     Object.keys(gameState.players).forEach(pId => {
-        if (pId !== myId && now - gameState.players[pId].lastSeen > 4000) delete gameState.players[pId];
+        if (pId !== myId && now - gameState.players[pId].lastSeen > 5000) delete gameState.players[pId];
     });
 
     Object.values(gameState.players).forEach(p => {
         let input = (p.id === myId) ? localInput : p.input;
 
-        // 噴吐細胞邏輯
         if (input.eject && now - (p.lastEject || 0) > 80) {
             p.cells.forEach(cell => {
                 if (cell.mass >= 32) {
@@ -335,7 +385,6 @@ function updateHostLogic() {
             input.eject = false;
         }
 
-        // 分裂邏輯
         if (input.split) {
             let availableSplits = 16 - p.cells.length;
             if (availableSplits > 0) {
@@ -343,7 +392,7 @@ function updateHostLogic() {
                 for (let cell of p.cells) {
                     if (cell.mass >= 36 && newCells.length < availableSplits) {
                         cell.mass /= 2;
-                        cell.squish = 1.35; // 分裂變形效果
+                        cell.squish = 1.35;
                         newCells.push({
                             x: cell.x, y: cell.y, renderX: cell.x, renderY: cell.y,
                             mass: cell.mass,
@@ -360,7 +409,6 @@ function updateHostLogic() {
 
         let addedCells = [];
         p.cells.forEach((cell) => {
-            // 自然質量衰減 (大於 20 質量)
             if (cell.mass > 20) cell.mass -= 0.002;
 
             let radius = Math.sqrt(cell.mass) * RADIUS_SCALE;
@@ -378,10 +426,8 @@ function updateHostLogic() {
             cell.renderX = cell.renderX ? cell.renderX + (cell.x - cell.renderX) * 0.4 : cell.x;
             cell.renderY = cell.renderY ? cell.renderY + (cell.y - cell.renderY) * 0.4 : cell.y;
             
-            // 形變恢復動畫
             if (cell.squish && cell.squish > 1) cell.squish += (1 - cell.squish) * 0.1;
 
-            // 食物吃取
             for (let i = gameState.foods.length - 1; i >= 0; i--) {
                 let f = gameState.foods[i];
                 if (Math.hypot(cell.x - f.x, cell.y - f.y) < radius) {
@@ -390,7 +436,6 @@ function updateHostLogic() {
                 }
             }
             
-            // 吐出養分吃取
             for (let i = gameState.ejected.length - 1; i >= 0; i--) {
                 let e = gameState.ejected[i];
                 if (Math.hypot(cell.x - e.x, cell.y - e.y) < radius) {
@@ -399,7 +444,6 @@ function updateHostLogic() {
                 }
             }
 
-            // 病毒刺球踩中炸開
             for (let i = 0; i < gameState.viruses.length; i++) {
                 let v = gameState.viruses[i];
                 if (cell.mass > v.radius && Math.hypot(cell.x - v.x, cell.y - v.y) < radius) {
@@ -428,7 +472,6 @@ function updateHostLogic() {
 
         if (addedCells.length > 0) p.cells.push(...addedCells);
 
-        // 同玩家細胞重組與碰撞
         for (let i = 0; i < p.cells.length; i++) {
             for (let j = i + 1; j < p.cells.length; j++) {
                 let c1 = p.cells[i], c2 = p.cells[j];
@@ -454,7 +497,6 @@ function updateHostLogic() {
         }
     });
 
-    // 吐出養分移動
     gameState.ejected.forEach(e => {
         if (e.speed > 0.1) {
             e.x += Math.cos(e.angle) * e.speed;
@@ -465,7 +507,6 @@ function updateHostLogic() {
         }
     });
 
-    // 玩家間互吞邏輯
     let allPlayers = Object.values(gameState.players);
     for (let i = 0; i < allPlayers.length; i++) {
         for (let j = 0; j < allPlayers.length; j++) {
@@ -498,7 +539,6 @@ function updateHostLogic() {
         }
     }
 
-    // 廣播遊戲狀態給所有 Clients
     if (peer && peer.connections) {
         Object.keys(peer.connections).forEach(pId => {
             peer.connections[pId].forEach(c => {
@@ -540,7 +580,7 @@ function drawVirus(x, y, radius) {
     ctx.lineWidth = 5;
     ctx.beginPath();
     let spikes = 20;
-    let rot = Date.now() * 0.001; // 動態旋轉效果
+    let rot = Date.now() * 0.001;
     for (let i = 0; i < spikes; i++) {
         let angle = (i / spikes) * Math.PI * 2 + rot;
         let r = (i % 2 === 0) ? radius : radius - 7;
@@ -598,7 +638,6 @@ function render() {
 
     drawBackground();
 
-    // 繪製地圖邊界發光
     ctx.strokeStyle = '#00f2fe'; ctx.lineWidth = 10;
     ctx.shadowColor = '#00f2fe'; ctx.shadowBlur = 15;
     ctx.strokeRect(0, 0, WORLD_SIZE, WORLD_SIZE);
@@ -607,7 +646,6 @@ function render() {
     let viewW = (window.innerWidth / camera.scale) / 2 + 100;
     let viewH = (window.innerHeight / camera.scale) / 2 + 100;
 
-    // 食物渲染
     gameState.foods.forEach(f => {
         if (Math.abs(f.x - camera.x) < viewW && Math.abs(f.y - camera.y) < viewH) {
             ctx.fillStyle = f.color;
@@ -615,7 +653,6 @@ function render() {
         }
     });
 
-    // 噴吐養分渲染
     gameState.ejected.forEach(e => {
         if (Math.abs(e.x - camera.x) < viewW && Math.abs(e.y - camera.y) < viewH) {
             ctx.fillStyle = e.color;
@@ -624,14 +661,12 @@ function render() {
         }
     });
 
-    // 病毒刺球渲染
     gameState.viruses.forEach(v => {
         if (Math.abs(v.x - camera.x) < viewW + v.radius && Math.abs(v.y - camera.y) < viewH + v.radius) {
             drawVirus(v.x, v.y, v.radius);
         }
     });
 
-    // 動態粒子效果
     for (let i = particles.length - 1; i >= 0; i--) {
         let pt = particles[i];
         ctx.fillStyle = pt.color;
@@ -643,7 +678,6 @@ function render() {
     }
     ctx.globalAlpha = 1.0;
 
-    // 繪製玩家細胞
     let renderCells = [];
     Object.values(gameState.players).forEach(p => {
         p.cells.forEach(c => renderCells.push({ ...c, color: p.color, name: p.name }));
@@ -659,18 +693,16 @@ function render() {
         if (Math.abs(rx - camera.x) < viewW + r && Math.abs(ry - camera.y) < viewH + r) {
             ctx.save();
             ctx.translate(rx, ry);
-            ctx.scale(sq, 1 / sq); // 彈性變形縮放
+            ctx.scale(sq, 1 / sq);
 
             ctx.fillStyle = c.color;
             ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill();
             
-            // 亮色外邊框
             ctx.strokeStyle = 'rgba(255,255,255,0.85)';
             ctx.lineWidth = Math.max(3, r * 0.06);
             ctx.stroke();
 
-            // 暱稱與質量文字
-            ctx.scale(1 / sq, sq); // 抵消文字變形
+            ctx.scale(1 / sq, sq);
             ctx.fillStyle = '#ffffff';
             ctx.shadowColor = 'rgba(0,0,0,0.8)';
             ctx.shadowBlur = 4;
@@ -691,7 +723,7 @@ function render() {
 }
 requestAnimationFrame(render);
 
-// 鍵盤與滑鼠操作事件
+// 操控監聽
 window.addEventListener('mousemove', (e) => {
     mousePos.x = e.clientX;
     mousePos.y = e.clientY;
@@ -710,11 +742,12 @@ window.addEventListener('mousemove', (e) => {
 });
 
 window.addEventListener('keydown', (e) => {
+    if (e.repeat) return; // 防止長按重複發送問題
     if (e.code === 'KeyW') { localInput.eject = true; sendInput(true); }
     if (e.code === 'Space') { localInput.split = true; sendInput(true); }
 });
 
-// 手機觸控搖桿邏輯
+// 手機搖桿機制
 const joyZone = document.getElementById('joystick-zone');
 const joyKnob = document.getElementById('joystick-knob');
 let joyTouchId = null;
