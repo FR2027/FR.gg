@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>FR.gg v26.10 Master Fixed</title>
+    <title>FR.gg v26.10 Master Server-Authored</title>
     <link rel="icon" type="image/jpeg" href="https://i.ibb.co/cXZ9bzt5/FR-gg.jpg">
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; }
@@ -78,6 +78,7 @@
         }
         .act-btn:active { background: rgba(0, 242, 254, 0.5); border-color: #00f2fe; }
 
+        /* 電腦版自動隱藏手機專用搖桿與控制按鈕 */
         @media (hover: hover) and (pointer: fine) {
             #joystick-zone, #mobile-controls { display: none !important; }
         }
@@ -362,7 +363,7 @@ function updateServerPhysics() {
                 }
             });
             p.lastEject = now;
-            p.input.eject = false;
+            db.ref(`servers/${currentRoomId}/players/${pId}/input/eject`).set(false);
         }
 
         if (input.split) {
@@ -384,7 +385,7 @@ function updateServerPhysics() {
                 }
                 p.cells.push(...newCells);
             }
-            p.input.split = false;
+            db.ref(`servers/${currentRoomId}/players/${pId}/input/split`).set(false);
         }
 
         let addedCells = [];
@@ -815,16 +816,18 @@ document.getElementById('btn-w').addEventListener('touchstart', (e) => {
     e.preventDefault(); 
     localInput.eject = true; 
     sendInput(true); 
+    setTimeout(() => { localInput.eject = false; }, 50);
 });
 document.getElementById('btn-space').addEventListener('touchstart', (e) => { 
     e.preventDefault(); 
     localInput.split = true; 
     sendInput(true); 
+    setTimeout(() => { localInput.split = false; }, 50);
 });
 
 function sendInput(force = false) {
     const now = Date.now();
-    if (force || now - lastSendTime > 50) {
+    if (force || now - lastSendTime > 20) {
         if (currentRoomId && myId) {
             db.ref(`servers/${currentRoomId}/players/${myId}/input`).set({
                 angle: localInput.angle,
