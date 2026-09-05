@@ -78,7 +78,6 @@
         }
         .act-btn:active { background: rgba(0, 242, 254, 0.5); border-color: #00f2fe; }
 
-        /* 電腦版（滑鼠裝置）自動隱藏手機搖桿與把手按鈕 */
         @media (hover: hover) and (pointer: fine) {
             #joystick-zone, #mobile-controls { display: none !important; }
         }
@@ -192,7 +191,6 @@ let currentServerCode = '';
 let isHost = false;
 
 let gameState = { players: {}, foods: [], viruses: [], ejected: [] };
-let playerOrder = [];
 let localInput = { angle: 0, speed: 0, split: false, eject: false };
 let lastSendTime = 0;
 let hostInterval = null;
@@ -364,7 +362,7 @@ function updateServerPhysics() {
                 }
             });
             p.lastEject = now;
-            db.ref(`servers/${currentRoomId}/players/${pId}/input/eject`).set(false);
+            p.input.eject = false;
         }
 
         if (input.split) {
@@ -386,7 +384,7 @@ function updateServerPhysics() {
                 }
                 p.cells.push(...newCells);
             }
-            db.ref(`servers/${currentRoomId}/players/${pId}/input/split`).set(false);
+            p.input.split = false;
         }
 
         let addedCells = [];
@@ -817,18 +815,16 @@ document.getElementById('btn-w').addEventListener('touchstart', (e) => {
     e.preventDefault(); 
     localInput.eject = true; 
     sendInput(true); 
-    setTimeout(() => { localInput.eject = false; }, 50);
 });
 document.getElementById('btn-space').addEventListener('touchstart', (e) => { 
     e.preventDefault(); 
     localInput.split = true; 
     sendInput(true); 
-    setTimeout(() => { localInput.split = false; }, 50);
 });
 
 function sendInput(force = false) {
     const now = Date.now();
-    if (force || now - lastSendTime > 20) {
+    if (force || now - lastSendTime > 50) {
         if (currentRoomId && myId) {
             db.ref(`servers/${currentRoomId}/players/${myId}/input`).set({
                 angle: localInput.angle,
