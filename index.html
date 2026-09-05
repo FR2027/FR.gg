@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>FR.gg v26.4</title>
+    <title>FR.gg v26.5 伺服器方案</title>
     <link rel="icon" type="image/jpeg" href="https://i.ibb.co/cXZ9bzt5/FR-gg.jpg">
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; touch-action: none; }
@@ -167,7 +167,7 @@ const WORLD_SIZE = 5000;
 const PADDING = 50;
 const RADIUS_SCALE = 3.6;
 const RECOMBINE_TIME = 18000;
-const MAX_FOODS = 650;
+const MAX_FOODS = 400;
 
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
@@ -219,11 +219,10 @@ function connectToServer() {
     const playerRef = db.ref(`servers/${currentRoomId}/players/${myId}`);
 
     playerRef.onDisconnect().remove();
-    playerRef.set({ name: myName, joinedAt: firebase.database.ServerValue.TIMESTAMP });
 
     roomHostRef.transaction((currentHost) => {
         if (!currentHost) {
-            return myId; // 宣告自己成為該房間的主機
+            return myId;
         }
         return currentHost;
     }, (error, committed, snapshot) => {
@@ -236,11 +235,27 @@ function connectToServer() {
         const hostId = snapshot.val();
         isHost = (hostId === myId);
 
+        // 建立本地玩家初始角色
+        const initialPlayerData = {
+            id: myId,
+            name: myName,
+            color: `hsl(${Math.random() * 360}, 80%, 55%)`,
+            cells: [{
+                x: Math.random() * (WORLD_SIZE - PADDING * 2) + PADDING,
+                y: Math.random() * (WORLD_SIZE - PADDING * 2) + PADDING,
+                mass: 20, vx: 0, vy: 0, splitTime: 0, squish: 1
+            }],
+            input: { angle: 0, speed: 0, split: false, eject: false },
+            lastSeen: Date.now()
+        };
+
+        playerRef.set(initialPlayerData);
+
         if (isHost) {
-            setStatus("您已成為伺服器核心，初始化世界中...");
+            setStatus("您已成為伺服器主機，初始化世界中...");
             initHostWorld();
         } else {
-            setStatus("成功連線至伺服器端！");
+            setStatus("成功連線至伺服器！");
         }
 
         document.getElementById('lobby').style.display = 'none';
@@ -258,7 +273,7 @@ function initHostWorld() {
             let initialFoods = [];
             let initialViruses = [];
             for (let i = 0; i < MAX_FOODS; i++) initialFoods.push(createFood());
-            for (let i = 0; i < 20; i++) initialViruses.push(createVirus());
+            for (let i = 0; i < 15; i++) initialViruses.push(createVirus());
             
             worldRef.set({
                 foods: initialFoods,
@@ -268,22 +283,8 @@ function initHostWorld() {
         }
     });
 
-    // 建立本地玩家初始角色
-    db.ref(`servers/${currentRoomId}/players/${myId}`).set({
-        id: myId,
-        name: myName,
-        color: `hsl(${Math.random() * 360}, 80%, 55%)`,
-        cells: [{
-            x: Math.random() * (WORLD_SIZE - PADDING * 2) + PADDING,
-            y: Math.random() * (WORLD_SIZE - PADDING * 2) + PADDING,
-            mass: 20, vx: 0, vy: 0, splitTime: 0, squish: 1
-        }],
-        input: { angle: 0, speed: 0, split: false, eject: false },
-        lastSeen: Date.now()
-    });
-
     if (hostInterval) clearInterval(hostInterval);
-    hostInterval = setInterval(updateServerPhysics, 1000 / 30); // 伺服器物理計算頻率
+    hostInterval = setInterval(updateServerPhysics, 1000 / 25);
 }
 
 function startSyncListener() {
@@ -305,7 +306,6 @@ function startSyncListener() {
             .sort((a, b) => b.totalMass - a.totalMass)
             .map(p => p.id);
 
-        // 檢查自己是否死亡
         let me = gameState.players[myId];
         if (!me && document.getElementById('lobby').style.display === 'none' && document.getElementById('gameover').style.display === 'none') {
             triggerGameOver(0);
@@ -326,13 +326,12 @@ function updateServerPhysics() {
         for (let i = 0; i < diff; i++) foods.push(createFood());
     }
 
-    // 處理玩家輸入與更新
     Object.keys(players).forEach(pId => {
         let p = players[pId];
         if (!p || !p.cells) return;
         let input = p.input || { angle: 0, speed: 0, split: false, eject: false };
 
-        if (input.eject && now - (p.lastEject || 0) > 80) {
+        if (input.eject && now - (p.lastEject || 0) > 100) {
             p.cells.forEach(cell => {
                 if (cell.mass >= 32) {
                     cell.mass -= 13;
@@ -385,7 +384,8 @@ function updateServerPhysics() {
             cell.x = Math.max(radius + 10, Math.min(WORLD_SIZE - radius - 10, cell.x));
             cell.y = Math.max(radius + 10, Math.min(WORLD_SIZE - radius - 10, cell.y));
 
-            // 吃食物
+            if (cell.squish && cell.squish > 1) cell.squish += (1 - cell.squish) * 0.1;
+
             for (let i = foods.length - 1; i >= 0; i--) {
                 let f = foods[i];
                 if (Math.hypot(cell.x - f.x, cell.y - f.y) < radius) {
@@ -393,8 +393,7 @@ function updateServerPhysics() {
                     foods.splice(i, 1);
                 }
             }
-
-            // 吃吐出的質量
+            
             for (let i = ejected.length - 1; i >= 0; i--) {
                 let e = ejected[i];
                 if (Math.hypot(cell.x - e.x, cell.y - e.y) < radius) {
@@ -402,37 +401,11 @@ function updateServerPhysics() {
                     ejected.splice(i, 1);
                 }
             }
-
-            // 病毒碰撞
-            for (let i = 0; i < viruses.length; i++) {
-                let v = viruses[i];
-                if (cell.mass > v.radius && Math.hypot(cell.x - v.x, cell.y - v.y) < radius) {
-                    let maxAllowed = 16 - (p.cells.length + addedCells.length);
-                    if (maxAllowed > 0) {
-                        let targetPieces = Math.min(maxAllowed + 1, Math.floor(cell.mass / 18));
-                        if (targetPieces > 1) {
-                            let splitMass = cell.mass / targetPieces;
-                            cell.mass = splitMass;
-                            for (let k = 1; k < targetPieces; k++) {
-                                let a = (Math.PI * 2 / targetPieces) * k;
-                                addedCells.push({
-                                    x: cell.x, y: cell.y,
-                                    mass: splitMass, vx: Math.cos(a) * 20, vy: Math.sin(a) * 20,
-                                    splitTime: now, squish: 1.4
-                                });
-                            }
-                        }
-                    }
-                    viruses[i] = createVirus();
-                    break;
-                }
-            }
         });
 
         if (addedCells.length > 0) p.cells.push(...addedCells);
     });
 
-    // 吐出物移動更新
     ejected.forEach(e => {
         if (e.speed > 0.1) {
             e.x += Math.cos(e.angle) * e.speed;
@@ -443,77 +416,9 @@ function updateServerPhysics() {
         }
     });
 
-    // 玩家互吃物理
-    let allPlayers = Object.values(players);
-    for (let i = 0; i < allPlayers.length; i++) {
-        for (let j = 0; j < allPlayers.length; j++) {
-            if (i === j) continue;
-            let p1 = allPlayers[i], p2 = allPlayers[j];
-            if (!p1.cells || !p2.cells) continue;
-
-            p1.cells.forEach(c1 => {
-                for (let k = p2.cells.length - 1; k >= 0; k--) {
-                    let c2 = p2.cells[k];
-                    if (c1.mass >= c2.mass * 1.12) {
-                        let r1 = Math.sqrt(c1.mass) * RADIUS_SCALE;
-                        let r2 = Math.sqrt(c2.mass) * RADIUS_SCALE;
-                        let dist = Math.hypot(c1.x - c2.x, c1.y - c2.y);
-                        if (dist < r1 - r2 * 0.35 || dist < r1 * 0.6) {
-                            c1.mass += c2.mass;
-                            p2.cells.splice(k, 1);
-                        }
-                    }
-                }
-            });
-        }
-    }
-
-    // 清除死亡玩家與空細胞
-    Object.keys(players).forEach(pId => {
-        let p = players[pId];
-        if (!p.cells || p.cells.length === 0) {
-            delete players[pId];
-            db.ref(`servers/${currentRoomId}/players/${pId}`).remove();
-        }
-    });
-
-    // 將更新後的狀態寫回 Firebase
-    db.ref(`servers/${currentRoomId}`).update({
-        players: players,
-        worldState: { foods, viruses, ejected }
-    });
-}
-
-function respawn() {
-    document.getElementById('gameover').style.display = 'none';
-    db.ref(`servers/${currentRoomId}/players/${myId}`).set({
-        id: myId,
-        name: myName,
-        color: `hsl(${Math.random() * 360}, 80%, 55%)`,
-        cells: [{
-            x: Math.random() * (WORLD_SIZE - PADDING * 2) + PADDING,
-            y: Math.random() * (WORLD_SIZE - PADDING * 2) + PADDING,
-            mass: 20, vx: 0, vy: 0, splitTime: 0, squish: 1
-        }],
-        input: { angle: 0, speed: 0, split: false, eject: false },
-        lastSeen: Date.now()
-    });
-}
-
-function returnToLobby() {
-    document.getElementById('gameover').style.display = 'none';
-    document.getElementById('lobby').style.display = 'flex';
-    document.getElementById('start-btn').disabled = false;
-    setStatus("");
-
-    if (currentRoomId && myId) {
-        db.ref(`servers/${currentRoomId}/players/${myId}`).remove();
-        if (isHost) {
-            db.ref(`servers/${currentRoomId}/hostId`).remove();
-            if (hostInterval) { clearInterval(hostInterval); hostInterval = null; }
-        }
-    }
-    isHost = false;
+    // 寫回 Firebase 資料庫同步給所有人
+    db.ref(`servers/${currentRoomId}/worldState`).set({ foods, viruses, ejected });
+    db.ref(`servers/${currentRoomId}/players`).set(players);
 }
 
 function createFood() {
@@ -532,9 +437,46 @@ function createVirus() {
     };
 }
 
+function respawn() {
+    document.getElementById('gameover').style.display = 'none';
+    const playerRef = db.ref(`servers/${currentRoomId}/players/${myId}`);
+    playerRef.set({
+        id: myId,
+        name: myName,
+        color: `hsl(${Math.random() * 360}, 80%, 55%)`,
+        cells: [{
+            x: Math.random() * (WORLD_SIZE - PADDING * 2) + PADDING,
+            y: Math.random() * (WORLD_SIZE - PADDING * 2) + PADDING,
+            mass: 20, vx: 0, vy: 0, splitTime: 0, squish: 1
+        }],
+        input: { angle: 0, speed: 0, split: false, eject: false },
+        lastSeen: Date.now()
+    });
+}
+
+function returnToLobby() {
+    document.getElementById('gameover').style.display = 'none';
+    document.getElementById('lobby').style.display = 'flex';
+    document.getElementById('start-btn').disabled = false;
+    setStatus("");
+    
+    if (currentRoomId && myId) {
+        db.ref(`servers/${currentRoomId}/players/${myId}`).remove();
+        if (isHost) {
+            db.ref(`servers/${currentRoomId}/hostId`).remove();
+        }
+    }
+    if (stateListener) {
+        db.ref(`servers/${currentRoomId}`).off('value', stateListener);
+    }
+    if (hostInterval) clearInterval(hostInterval);
+    isHost = false;
+}
+
 function triggerGameOver(score) {
     document.getElementById('final-score').innerText = Math.floor(score);
     document.getElementById('gameover').style.display = 'flex';
+    db.ref(`servers/${currentRoomId}/players/${myId}`).remove();
 }
 
 function drawBackground() {
@@ -759,6 +701,7 @@ function updateJoystick(touch) {
     let rect = joyZone.getBoundingClientRect();
     let centerX = rect.left + rect.width / 2;
     let centerY = rect.top + rect.height / 2;
+    
     let dx = touch.clientX - centerX;
     let dy = touch.clientY - centerY;
     let dist = Math.hypot(dx, dy);
@@ -791,7 +734,7 @@ document.getElementById('btn-space').addEventListener('touchstart', (e) => { e.p
 
 function sendInput(force = false) {
     const now = Date.now();
-    if (force || now - lastSendTime > 40) {
+    if (force || now - lastSendTime > 50) {
         if (currentRoomId && myId) {
             db.ref(`servers/${currentRoomId}/players/${myId}/input`).set(localInput);
             lastSendTime = now;
