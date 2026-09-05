@@ -77,10 +77,6 @@
             touch-action: none; cursor: pointer;
         }
         .act-btn:active { background: rgba(0, 242, 254, 0.5); border-color: #00f2fe; }
-
-        @media (hover: hover) and (pointer: fine) {
-            #joystick-zone, #mobile-controls { display: none !important; }
-        }
     </style>
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
@@ -331,7 +327,6 @@ function updateServerPhysics() {
     let viruses = gameState.viruses || [];
     let ejected = gameState.ejected || [];
 
-    // 自動回補食物機制
     if (foods.length < MAX_FOODS) {
         let diff = MAX_FOODS - foods.length;
         for (let i = 0; i < diff; i++) {
@@ -339,7 +334,6 @@ function updateServerPhysics() {
         }
     }
 
-    // 自動回補綠色障礙物機制
     if (viruses.length < MAX_VIRUSES) {
         let diff = MAX_VIRUSES - viruses.length;
         for (let i = 0; i < diff; i++) {
@@ -622,11 +616,12 @@ function updateMouseInput() {
 
     localInput.angle = Math.atan2(dy, dx);
     
-    let totalMass = me.cells.reduce((sum, c) => sum + c.mass, 0);
-    let avgRadius = Math.sqrt(totalMass) * RADIUS_SCALE;
-    let maxSensitivityRadius = Math.max(80, avgRadius * 2.5);
-
-    localInput.speed = Math.min(1, Math.max(0.1, dist / maxSensitivityRadius));
+    // 滑鼠距離角色極近時可完全停止移動（設為 0），否則隨距離放大速度
+    if (dist < 15) {
+        localInput.speed = 0;
+    } else {
+        localInput.speed = Math.min(1, dist / 100);
+    }
     sendInput();
 }
 
@@ -705,7 +700,6 @@ function render() {
             }
         });
     }
-    // 質量由小到大排序，確保體積小的細胞繪製在上層，體驗更佳
     renderCells.sort((a, b) => a.mass - b.mass);
 
     renderCells.forEach(c => {
