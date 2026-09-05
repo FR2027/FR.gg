@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>FR.gg v26.5</title>
+    <title>FR.gg - 伺服器對戰版</title>
     <link rel="icon" type="image/jpeg" href="https://i.ibb.co/cXZ9bzt5/FR-gg.jpg">
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; touch-action: none; }
@@ -146,6 +146,7 @@ const firebaseConfig = {
 firebase.initializeApp(firebaseConfig);
 const db = firebase.database();
 
+// 即時顯示大廳各伺服器人數
 const serverSelect = document.getElementById('server-select');
 ['1111', '2222', '3333'].forEach(serverCode => {
     db.ref(`servers/frgg_${serverCode}/players`).on('value', (snapshot) => {
@@ -164,7 +165,7 @@ document.addEventListener('gesturestart', e => e.preventDefault());
 document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
 
 const WORLD_SIZE = 5000;
-const PADDING = 50;
+const PADDING = 80;
 const RADIUS_SCALE = 3.6;
 const MAX_FOODS = 650;
 
@@ -186,10 +187,10 @@ resizeCanvas();
 let myName = "未命名玩家";
 let myId = 'p_' + Math.random().toString(36).substring(2, 9);
 let currentRoomId = '';
-let currentServerCode = '';
 let isHost = false;
 
 let gameState = { players: {}, foods: [], viruses: [], ejected: [] };
+let playerOrder = [];
 let localInput = { angle: 0, speed: 0, split: false, eject: false };
 let lastSendTime = 0;
 let hostInterval = null;
@@ -206,17 +207,16 @@ function setStatus(msg) {
 
 function connectToServer() {
     myName = document.getElementById('nickname').value.trim() || "未命名玩家";
-    currentServerCode = document.getElementById('server-select').value;
-    currentRoomId = 'frgg_' + currentServerCode;
+    let serverCode = document.getElementById('server-select').value;
+    currentRoomId = 'frgg_' + serverCode;
 
     document.getElementById('start-btn').disabled = true;
-    setStatus("正在連接伺服器分流...");
+    setStatus("正在安全連接伺服器...");
 
     const roomHostRef = db.ref(`servers/${currentRoomId}/hostId`);
     const playerRef = db.ref(`servers/${currentRoomId}/players/${myId}`);
 
     playerRef.onDisconnect().remove();
-    playerRef.set({ name: myName, joinedAt: firebase.database.ServerValue.TIMESTAMP });
 
     roomHostRef.transaction((currentHost) => {
         if (!currentHost) {
@@ -225,7 +225,7 @@ function connectToServer() {
         return currentHost;
     }, (error, committed, snapshot) => {
         if (error) {
-            setStatus("連線伺服器發生錯誤");
+            setStatus("連線發生錯誤，請重試");
             document.getElementById('start-btn').disabled = false;
             return;
         }
@@ -234,16 +234,35 @@ function connectToServer() {
         isHost = (hostId === myId);
 
         if (isHost) {
-            setStatus("您已成為伺服器核心，初始化世界中...");
+            setStatus("初始化伺服器世界中...");
             initHostWorld();
         } else {
-            setStatus("成功連線至伺服器端！");
+            setStatus("成功加入伺服器！");
         }
 
+        // 建立初始玩家身分
+        respawnPlayerInDB();
+
         document.getElementById('lobby').style.display = 'none';
+        document.getElementById('gameover').style.display = 'none';
         document.getElementById('start-btn').disabled = false;
 
         startSyncListener();
+    });
+}
+
+function respawnPlayerInDB() {
+    db.ref(`servers/${currentRoomId}/players/${myId}`).set({
+        id: myId,
+        name: myName,
+        color: `hsl(${Math.random() * 360}, 80%, 55%)`,
+        cells: [{
+            x: Math.random() * (WORLD_SIZE - PADDING * 4) + PADDING * 2,
+            y: Math.random() * (WORLD_SIZE - PADDING * 4) + PADDING * 2,
+            mass: 25, vx: 0, vy: 0, splitTime: Date.now(), squish: 1
+        }],
+        input: { angle: 0, speed: 0, split: false, eject: false },
+        lastSeen: Date.now()
     });
 }
 
@@ -265,19 +284,6 @@ function initHostWorld() {
         }
     });
 
-    db.ref(`servers/${currentRoomId}/players/${myId}`).set({
-        id: myId,
-        name: myName,
-        color: `hsl(${Math.random() * 360}, 80%, 55%)`,
-        cells: [{
-            x: Math.random() * (WORLD_SIZE - PADDING * 2) + PADDING,
-            y: Math.random() * (WORLD_SIZE - PADDING * 2) + PADDING,
-            mass: 20, vx: 0, vy: 0, splitTime: 0, squish: 1
-        }],
-        input: { angle: 0, speed: 0, split: false, eject: false },
-        lastSeen: Date.now()
-    });
-
     if (hostInterval) clearInterval(hostInterval);
     hostInterval = setInterval(updateServerPhysics, 1000 / 30);
 }
@@ -296,8 +302,17 @@ function startSyncListener() {
         gameState.viruses = (data.worldState && data.worldState.viruses) || [];
         gameState.ejected = (data.worldState && data.worldState.ejected) || [];
 
+        playerOrder = Object.values(gameState.players)
+            .map(p => ({ id: p.id, totalMass: (p.cells || []).reduce((s, c) => s + c.mass, 0) }))
+            .sort((a, b) => b.totalMass - a.totalMass)
+            .map(p => p.id);
+
+        // 偵測自己是否死亡
         let me = gameState.players[myId];
-        if (!me && document.getElementById('lobby').style.display === 'none' && document.getElementById('gameover').style.display === 'none') {
+        let lobbyVisible = document.getElementById('lobby').style.display !== 'none';
+        let gameoverVisible = document.getElementById('gameover').style.display === 'flex';
+
+        if (!me && !lobbyVisible && !gameoverVisible) {
             triggerGameOver(0);
         }
     });
@@ -321,15 +336,15 @@ function updateServerPhysics() {
         if (!p || !p.cells) return;
         let input = p.input || { angle: 0, speed: 0, split: false, eject: false };
 
-        if (input.eject && now - (p.lastEject || 0) > 80) {
+        if (input.eject && now - (p.lastEject || 0) > 100) {
             p.cells.forEach(cell => {
-                if (cell.mass >= 32) {
-                    cell.mass -= 13;
+                if (cell.mass >= 36) {
+                    cell.mass -= 12;
                     let r = Math.sqrt(cell.mass) * RADIUS_SCALE;
                     ejected.push({
-                        x: cell.x + Math.cos(input.angle) * (r + 10),
-                        y: cell.y + Math.sin(input.angle) * (r + 10),
-                        angle: input.angle, speed: 20, mass: 12, color: p.color
+                        x: cell.x + Math.cos(input.angle) * (r + 12),
+                        y: cell.y + Math.sin(input.angle) * (r + 12),
+                        angle: input.angle, speed: 18, mass: 10, color: p.color
                     });
                 }
             });
@@ -342,14 +357,13 @@ function updateServerPhysics() {
             if (availableSplits > 0) {
                 let newCells = [];
                 for (let cell of p.cells) {
-                    if (cell.mass >= 36 && newCells.length < availableSplits) {
+                    if (cell.mass >= 40 && newCells.length < availableSplits) {
                         cell.mass /= 2;
-                        cell.squish = 1.35;
                         newCells.push({
                             x: cell.x, y: cell.y,
                             mass: cell.mass,
-                            vx: Math.cos(input.angle) * 24, vy: Math.sin(input.angle) * 24,
-                            splitTime: now, squish: 1.35
+                            vx: Math.cos(input.angle) * 22, vy: Math.sin(input.angle) * 22,
+                            splitTime: now, squish: 1.3
                         });
                         cell.splitTime = now;
                     }
@@ -361,19 +375,20 @@ function updateServerPhysics() {
 
         let addedCells = [];
         p.cells.forEach(cell => {
-            if (cell.mass > 20) cell.mass -= 0.002;
+            if (cell.mass > 25) cell.mass -= 0.0015;
             let radius = Math.sqrt(cell.mass) * RADIUS_SCALE;
-            let speed = Math.max(1.6, 9 - (radius * 0.032)) * (input.speed || 0);
+            let speed = Math.max(1.5, 8.5 - (radius * 0.03)) * (input.speed || 0);
 
             cell.x += Math.cos(input.angle) * speed + (cell.vx || 0);
             cell.y += Math.sin(input.angle) * speed + (cell.vy || 0);
 
-            if (cell.vx) cell.vx *= 0.88;
-            if (cell.vy) cell.vy *= 0.88;
+            if (cell.vx) cell.vx *= 0.85;
+            if (cell.vy) cell.vy *= 0.85;
 
-            cell.x = Math.max(radius + 10, Math.min(WORLD_SIZE - radius - 10, cell.x));
-            cell.y = Math.max(radius + 10, Math.min(WORLD_SIZE - radius - 10, cell.y));
+            cell.x = Math.max(radius, Math.min(WORLD_SIZE - radius, cell.x));
+            cell.y = Math.max(radius, Math.min(WORLD_SIZE - radius, cell.y));
 
+            // 吃食物
             for (let i = foods.length - 1; i >= 0; i--) {
                 let f = foods[i];
                 if (Math.hypot(cell.x - f.x, cell.y - f.y) < radius) {
@@ -382,6 +397,7 @@ function updateServerPhysics() {
                 }
             }
 
+            // 吃吐出物
             for (let i = ejected.length - 1; i >= 0; i--) {
                 let e = ejected[i];
                 if (Math.hypot(cell.x - e.x, cell.y - e.y) < radius) {
@@ -390,12 +406,13 @@ function updateServerPhysics() {
                 }
             }
 
+            // 病毒碰撞
             for (let i = 0; i < viruses.length; i++) {
                 let v = viruses[i];
                 if (cell.mass > v.radius && Math.hypot(cell.x - v.x, cell.y - v.y) < radius) {
                     let maxAllowed = 16 - (p.cells.length + addedCells.length);
                     if (maxAllowed > 0) {
-                        let targetPieces = Math.min(maxAllowed + 1, Math.floor(cell.mass / 18));
+                        let targetPieces = Math.min(maxAllowed + 1, Math.floor(cell.mass / 20));
                         if (targetPieces > 1) {
                             let splitMass = cell.mass / targetPieces;
                             cell.mass = splitMass;
@@ -403,8 +420,8 @@ function updateServerPhysics() {
                                 let a = (Math.PI * 2 / targetPieces) * k;
                                 addedCells.push({
                                     x: cell.x, y: cell.y,
-                                    mass: splitMass, vx: Math.cos(a) * 20, vy: Math.sin(a) * 20,
-                                    splitTime: now, squish: 1.4
+                                    mass: splitMass, vx: Math.cos(a) * 18, vy: Math.sin(a) * 18,
+                                    splitTime: now, squish: 1.3
                                 });
                             }
                         }
@@ -418,16 +435,18 @@ function updateServerPhysics() {
         if (addedCells.length > 0) p.cells.push(...addedCells);
     });
 
+    // 吐出物移動
     ejected.forEach(e => {
         if (e.speed > 0.1) {
             e.x += Math.cos(e.angle) * e.speed;
             e.y += Math.sin(e.angle) * e.speed;
-            e.speed *= 0.86;
+            e.speed *= 0.85;
         } else {
             e.speed = 0;
         }
     });
 
+    // 玩家互吃
     let allPlayers = Object.values(players);
     for (let i = 0; i < allPlayers.length; i++) {
         for (let j = 0; j < allPlayers.length; j++) {
@@ -438,11 +457,11 @@ function updateServerPhysics() {
             p1.cells.forEach(c1 => {
                 for (let k = p2.cells.length - 1; k >= 0; k--) {
                     let c2 = p2.cells[k];
-                    if (c1.mass >= c2.mass * 1.12) {
+                    if (c1.mass >= c2.mass * 1.1) {
                         let r1 = Math.sqrt(c1.mass) * RADIUS_SCALE;
                         let r2 = Math.sqrt(c2.mass) * RADIUS_SCALE;
                         let dist = Math.hypot(c1.x - c2.x, c1.y - c2.y);
-                        if (dist < r1 - r2 * 0.35 || dist < r1 * 0.6) {
+                        if (dist < r1 - r2 * 0.3 || dist < r1 * 0.5) {
                             c1.mass += c2.mass;
                             p2.cells.splice(k, 1);
                         }
@@ -452,6 +471,7 @@ function updateServerPhysics() {
         }
     }
 
+    // 清除空白細胞與無效玩家
     Object.keys(players).forEach(pId => {
         let p = players[pId];
         if (!p.cells || p.cells.length === 0) {
@@ -468,18 +488,7 @@ function updateServerPhysics() {
 
 function respawn() {
     document.getElementById('gameover').style.display = 'none';
-    db.ref(`servers/${currentRoomId}/players/${myId}`).set({
-        id: myId,
-        name: myName,
-        color: `hsl(${Math.random() * 360}, 80%, 55%)`,
-        cells: [{
-            x: Math.random() * (WORLD_SIZE - PADDING * 2) + PADDING,
-            y: Math.random() * (WORLD_SIZE - PADDING * 2) + PADDING,
-            mass: 20, vx: 0, vy: 0, splitTime: 0, squish: 1
-        }],
-        input: { angle: 0, speed: 0, split: false, eject: false },
-        lastSeen: Date.now()
-    });
+    respawnPlayerInDB();
 }
 
 function returnToLobby() {
@@ -510,7 +519,7 @@ function createVirus() {
     return {
         x: Math.random() * (WORLD_SIZE - PADDING * 4) + PADDING * 2,
         y: Math.random() * (WORLD_SIZE - PADDING * 4) + PADDING * 2,
-        radius: 48, mass: 100
+        radius: 45, mass: 100
     };
 }
 
@@ -543,13 +552,13 @@ function drawVirus(x, y, radius) {
     ctx.save();
     ctx.fillStyle = '#22cc44';
     ctx.strokeStyle = '#15882c';
-    ctx.lineWidth = 5;
+    ctx.lineWidth = 4;
     ctx.beginPath();
-    let spikes = 20;
+    let spikes = 16;
     let rot = Date.now() * 0.001;
     for (let i = 0; i < spikes; i++) {
         let angle = (i / spikes) * Math.PI * 2 + rot;
-        let r = (i % 2 === 0) ? radius : radius - 7;
+        let r = (i % 2 === 0) ? radius : radius - 6;
         let vx = x + Math.cos(angle) * r;
         let vy = y + Math.sin(angle) * r;
         if (i === 0) ctx.moveTo(vx, vy); else ctx.lineTo(vx, vy);
@@ -569,7 +578,7 @@ function updateLeaderboard() {
 
     let html = '';
     sorted.forEach((p, i) => {
-        html += `<li class="${p.id === myId ? 'me' : ''}"><span>${i + 1}. ${p.name || '未命名'}</span><span>${Math.floor(p.totalMass || 0)}</span></li>`;
+        html += `<li class="${p.id === myId ? 'me' : ''}"><span>${i + 1}. ${p.name}</span><span>${Math.floor(p.totalMass)}</span></li>`;
     });
     listEl.innerHTML = html;
 }
@@ -590,8 +599,8 @@ function render() {
 
         document.getElementById('hud-mass').innerText = Math.floor(totalMass);
 
-        let targetScale = Math.max(0.25, 1 - (Math.sqrt(totalMass) * 0.0028));
-        camera.scale += (targetScale - camera.scale) * 0.08;
+        let targetScale = Math.max(0.25, 1 - (Math.sqrt(totalMass) * 0.0025));
+        camera.scale += (targetScale - camera.scale) * 0.1;
         camera.x += (avgX - camera.x) * 0.12;
         camera.y += (avgY - camera.y) * 0.12;
     }
@@ -604,8 +613,8 @@ function render() {
 
     drawBackground();
 
-    ctx.strokeStyle = '#00f2fe'; ctx.lineWidth = 10;
-    ctx.shadowColor = '#00f2fe'; ctx.shadowBlur = 15;
+    ctx.strokeStyle = '#00f2fe'; ctx.lineWidth = 8;
+    ctx.shadowColor = '#00f2fe'; ctx.shadowBlur = 12;
     ctx.strokeRect(0, 0, WORLD_SIZE, WORLD_SIZE);
     ctx.shadowBlur = 0;
 
@@ -625,8 +634,8 @@ function render() {
         gameState.ejected.forEach(e => {
             if (Math.abs(e.x - camera.x) < viewW && Math.abs(e.y - camera.y) < viewH) {
                 ctx.fillStyle = e.color;
-                ctx.beginPath(); ctx.arc(e.x, e.y, 9, 0, Math.PI * 2); ctx.fill();
-                ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+                ctx.beginPath(); ctx.arc(e.x, e.y, 8, 0, Math.PI * 2); ctx.fill();
+                ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
             }
         });
     }
@@ -662,7 +671,7 @@ function render() {
             ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill();
             
             ctx.strokeStyle = 'rgba(255,255,255,0.85)';
-            ctx.lineWidth = Math.max(3, r * 0.06);
+            ctx.lineWidth = Math.max(3, r * 0.05);
             ctx.stroke();
 
             ctx.scale(1 / sq, sq);
@@ -670,14 +679,14 @@ function render() {
             ctx.shadowColor = 'rgba(0,0,0,0.8)';
             ctx.shadowBlur = 4;
 
-            let nameSize = Math.max(10, Math.floor(r * 0.32));
-            let massSize = Math.max(8, Math.floor(r * 0.24));
+            let nameSize = Math.max(10, Math.floor(r * 0.3));
+            let massSize = Math.max(8, Math.floor(r * 0.22));
 
             ctx.font = `bold ${nameSize}px sans-serif`;
             ctx.textAlign = 'center';
-            ctx.fillText(c.name || '未命名', 0, -(r * 0.08));
+            ctx.fillText(c.name, 0, -(r * 0.08));
             ctx.font = `600 ${massSize}px sans-serif`;
-            ctx.fillText(Math.floor(c.mass || 0), 0, (r * 0.28));
+            ctx.fillText(Math.floor(c.mass), 0, (r * 0.28));
 
             ctx.restore();
         }
