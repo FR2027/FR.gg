@@ -97,9 +97,9 @@
             <div class="input-group">
                 <label>選擇伺服器分流</label>
                 <select id="server-select">
-                    <option value="1111">主分流伺服器🔥 (載入中...)</option>
-                    <option value="2222">第二分流伺服器 (載入中...)</option>
-                    <option value="3333">第三分流伺服器 (載入中...)</option>
+                    <option value="1111">主分流伺服器🔥</option>
+                    <option value="2222">第二分流伺服器</option>
+                    <option value="3333">第三分流伺服器</option>
                 </select>
             </div>
             <div class="btn-group">
@@ -134,7 +134,6 @@
     </div>
 
 <script>
-// 67
 const firebaseConfig = {
     apiKey: "AIzaSyCCzmZs22Omv_RPAW47QXyfJI05kItr7Bw",
     authDomain: "frgg-c5404.firebaseapp.com",
@@ -147,21 +146,6 @@ const firebaseConfig = {
 };
 firebase.initializeApp(firebaseConfig);
 const db = firebase.database();
-
-const serverSelect = document.getElementById('server-select');
-['1111', '2222', '3333'].forEach(serverCode => {
-    db.ref(`servers/frgg_${serverCode}/players`).on('value', (snapshot) => {
-        const players = snapshot.val() || {};
-        const count = Object.keys(players).length;
-        
-        for (let i = 0; i < serverSelect.options.length; i++) {
-            if (serverSelect.options[i].value === serverCode) {
-                const baseName = serverCode === '1111' ? '主分流伺服器🔥' : `第${serverCode[0]}分流伺服器`;
-                serverSelect.options[i].text = `${baseName} (${count}人)`;
-            }
-        }
-    });
-});
 
 document.addEventListener('gesturestart', e => e.preventDefault());
 document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
@@ -247,6 +231,7 @@ function connectToServer() {
     playerPresenceRef.onDisconnect().remove();
     playerPresenceRef.set({ name: myName, joinedAt: firebase.database.ServerValue.TIMESTAMP });
 
+    // 使用一次性讀取 (.once) 來取代即時監聽，徹底避免 429 錯誤
     hostRef.once('value', (snapshot) => {
         let existingHostId = snapshot.val();
         if (!existingHostId) {
@@ -254,6 +239,9 @@ function connectToServer() {
         } else {
             tryConnectToHost(existingHostId);
         }
+    }, (error) => {
+        setStatus("連線伺服器過載，請稍後再試");
+        document.getElementById('start-btn').disabled = false;
     });
 }
 
@@ -360,7 +348,6 @@ function updateClientState(newState) {
             pNew.cells.forEach((cNew, idx) => {
                 let cOld = pOld.cells[idx];
                 if (cOld && typeof cOld.renderX === 'number' && typeof cOld.renderY === 'number') {
-                    // 優化位置插值係數，大幅減輕移動卡頓感
                     cNew.renderX = cOld.renderX + (cNew.x - cOld.renderX) * 0.65;
                     cNew.renderY = cOld.renderY + (cNew.y - cOld.renderY) * 0.65;
                 } else {
@@ -420,7 +407,7 @@ function becomeHost(roomId) {
     });
 
     cleanUpTimers();
-    hostInterval = setInterval(updateHostLogic, 1000 / 45); // 提升伺服器物理更新率至 45 fps 增進流暢度
+    hostInterval = setInterval(updateHostLogic, 1000 / 45);
 }
 
 function removePlayer(pId) {
@@ -986,7 +973,7 @@ document.getElementById('btn-space').addEventListener('touchstart', (e) => { e.p
 
 function sendInput(force = false) {
     const now = Date.now();
-    if (force || now - lastSendTime > 15) { // 提高輸入發送頻率 (從 30ms 縮短至 15ms) 讓操作更即時
+    if (force || now - lastSendTime > 15) {
         if (!isHost && conn && conn.open) {
             conn.send({ type: 'INPUT', input: localInput });
             lastSendTime = now;
