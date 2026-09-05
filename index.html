@@ -92,7 +92,7 @@
             <h1>FR.gg</h1>
             <div class="input-group">
                 <label>玩家暱稱</label>
-                <input type="text" id="nickname" placeholder="輸入名稱..." maxlength="10" value="玩家">
+                <input type="text" id="nickname" placeholder="輸入名稱..." maxlength="10" value="未命名玩家">
             </div>
             <div class="input-group">
                 <label>選擇伺服器分流</label>
@@ -134,7 +134,7 @@
     </div>
 
 <script>
-// ==================== Firebase 設定 ====================
+// 67
 const firebaseConfig = {
     apiKey: "AIzaSyCCzmZs22Omv_RPAW47QXyfJI05kItr7Bw",
     authDomain: "frgg-c5404.firebaseapp.com",
@@ -231,7 +231,7 @@ function setStatus(msg) {
 }
 
 function connectToServer() {
-    myName = document.getElementById('nickname').value.trim() || "無名玩家";
+    myName = document.getElementById('nickname').value.trim() || "未命名玩家";
     currentServerCode = document.getElementById('server-select').value;
     currentRoomId = 'frgg_' + currentServerCode;
 
@@ -295,7 +295,7 @@ function claimHostAndStart(roomId) {
 
 function tryConnectToHost(hostId) {
     isHost = false;
-    setStatus(`正在連線至房主 (${hostId})...`);
+    setStatus(`正在連線至主機 (${hostId})...`);
 
     peer = new Peer(myId, PEER_CONFIG);
 
@@ -305,7 +305,7 @@ function tryConnectToHost(hostId) {
     });
 
     peer.on('error', () => {
-        setStatus("無法連線至房主，切換為自行建立伺服器...");
+        setStatus("無法連線至房機，切換為自行建立伺服器...");
         claimHostAndStart(currentRoomId);
     });
 }
@@ -343,7 +343,7 @@ function setupClientConn(c) {
 
 function handleHostDisconnect() {
     if (isHost) return;
-    setStatus("房主已斷線，正在自動接管分流伺服器...");
+    setStatus("連線逾時，正在自動連接分流伺服器...");
     cleanUpTimers();
     if (peer) { try { peer.destroy(); } catch(e){} }
     
