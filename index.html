@@ -3,17 +3,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>FR.gg v26.7 Fixed</title>
+    <title>FR.gg v26.9 Master Fixed</title>
     <link rel="icon" type="image/jpeg" href="https://i.ibb.co/cXZ9bzt5/FR-gg.jpg">
     <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; touch-action: none; }
-        body, html { width: 100%; height: 100%; overflow: hidden; background: #05070f; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; position: fixed; }
+        * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; }
+        body, html { width: 100%; height: 100%; overflow: hidden; background: #05070f; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; position: fixed; touch-action: none; }
         canvas { display: block; width: 100vw; height: 100vh; position: absolute; top:0; left:0; z-index: 1; }
 
         .overlay-screen {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
             background: rgba(5, 7, 15, 0.88); backdrop-filter: blur(16px);
             display: flex; justify-content: center; align-items: center; z-index: 10; color: white;
+            touch-action: auto;
         }
         .panel {
             background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.12);
@@ -60,19 +61,20 @@
         #status-msg { margin-top: 14px; font-size: 13px; color: #00f2fe; min-height: 18px; word-break: break-all; }
         
         #joystick-zone {
-            position: absolute; bottom: 25px; left: 25px; width: 110px; height: 110px;
+            position: absolute; bottom: 25px; left: 25px; width: 120px; height: 120px;
             border-radius: 50%; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.2);
             touch-action: none; z-index: 6; display: flex; justify-content: center; align-items: center;
         }
         #joystick-knob {
-            width: 44px; height: 44px; border-radius: 50%; background: rgba(0, 242, 254, 0.6);
+            width: 50px; height: 50px; border-radius: 50%; background: rgba(0, 242, 254, 0.6);
             pointer-events: none; transition: transform 0.05s ease-out; box-shadow: 0 0 10px rgba(0,242,254,0.5);
         }
-        #mobile-controls { position: absolute; bottom: 25px; right: 25px; display: flex; gap: 14px; z-index: 6; }
+        #mobile-controls { position: absolute; bottom: 25px; right: 25px; display: flex; gap: 14px; z-index: 6; touch-action: none; }
         .act-btn {
             width: 58px; height: 58px; border-radius: 50%; background: rgba(255,255,255,0.12);
             border: 2px solid rgba(255,255,255,0.3); color: white; font-weight: bold; font-size: 15px;
             display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px);
+            touch-action: none; cursor: pointer;
         }
         .act-btn:active { background: rgba(0, 242, 254, 0.5); border-color: #00f2fe; }
 
@@ -160,12 +162,12 @@ const serverSelect = document.getElementById('server-select');
 });
 
 document.addEventListener('gesturestart', e => e.preventDefault());
-document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
 
 const WORLD_SIZE = 5000;
 const PADDING = 50;
 const RADIUS_SCALE = 3.6;
 const MAX_FOODS = 650;
+const MAX_VIRUSES = 25;
 
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
@@ -269,7 +271,7 @@ function initHostWorld() {
             let initialFoods = [];
             let initialViruses = [];
             for (let i = 0; i < MAX_FOODS; i++) initialFoods.push(createFood());
-            for (let i = 0; i < 20; i++) initialViruses.push(createVirus());
+            for (let i = 0; i < MAX_VIRUSES; i++) initialViruses.push(createVirus());
             
             worldRef.set({
                 foods: initialFoods,
@@ -314,11 +316,6 @@ function startSyncListener() {
         gameState.viruses = (data.worldState && data.worldState.viruses) || [];
         gameState.ejected = (data.worldState && data.worldState.ejected) || [];
 
-        playerOrder = Object.values(gameState.players)
-            .map(p => ({ id: p.id, totalMass: (p.cells || []).reduce((s, c) => s + c.mass, 0) }))
-            .sort((a, b) => b.totalMass - a.totalMass)
-            .map(p => p.id);
-
         let me = gameState.players[myId];
         if (!me && document.getElementById('lobby').style.display === 'none' && document.getElementById('gameover').style.display === 'none') {
             triggerGameOver(0);
@@ -334,9 +331,20 @@ function updateServerPhysics() {
     let viruses = gameState.viruses || [];
     let ejected = gameState.ejected || [];
 
+    // 自動回補食物機制
     if (foods.length < MAX_FOODS) {
         let diff = MAX_FOODS - foods.length;
-        for (let i = 0; i < diff; i++) foods.push(createFood());
+        for (let i = 0; i < diff; i++) {
+            foods.push(createFood());
+        }
+    }
+
+    // 自動回補綠色障礙物機制
+    if (viruses.length < MAX_VIRUSES) {
+        let diff = MAX_VIRUSES - viruses.length;
+        for (let i = 0; i < diff; i++) {
+            viruses.push(createVirus());
+        }
     }
 
     Object.keys(players).forEach(pId => {
@@ -357,7 +365,7 @@ function updateServerPhysics() {
                 }
             });
             p.lastEject = now;
-            input.eject = false;
+            db.ref(`servers/${currentRoomId}/players/${pId}/input/eject`).set(false);
         }
 
         if (input.split) {
@@ -379,7 +387,7 @@ function updateServerPhysics() {
                 }
                 p.cells.push(...newCells);
             }
-            input.split = false;
+            db.ref(`servers/${currentRoomId}/players/${pId}/input/split`).set(false);
         }
 
         let addedCells = [];
@@ -602,11 +610,9 @@ function updateMouseInput() {
     let me = gameState.players ? gameState.players[myId] : null;
     if (!me || !me.cells || me.cells.length === 0) return;
 
-    // 計算玩家所有細胞的中心點世界座標
     let avgX = me.cells.reduce((sum, c) => sum + c.x, 0) / me.cells.length;
     let avgY = me.cells.reduce((sum, c) => sum + c.y, 0) / me.cells.length;
 
-    // 將滑鼠螢幕座標轉換為世界座標
     let mouseWorldX = camera.x + (mouseScreenPos.x - window.innerWidth / 2) / camera.scale;
     let mouseWorldY = camera.y + (mouseScreenPos.y - window.innerHeight / 2) / camera.scale;
 
@@ -616,7 +622,6 @@ function updateMouseInput() {
 
     localInput.angle = Math.atan2(dy, dx);
     
-    // 依據玩家本體大小計算合適的控制靈敏度半徑
     let totalMass = me.cells.reduce((sum, c) => sum + c.mass, 0);
     let avgRadius = Math.sqrt(totalMass) * RADIUS_SCALE;
     let maxSensitivityRadius = Math.max(80, avgRadius * 2.5);
@@ -646,7 +651,6 @@ function render() {
         camera.x += (avgX - camera.x) * 0.12;
         camera.y += (avgY - camera.y) * 0.12;
 
-        // 每幀依據最新相機與角色位置更新滑鼠移動向量
         updateMouseInput();
     }
 
@@ -701,6 +705,7 @@ function render() {
             }
         });
     }
+    // 質量由小到大排序，確保體積小的細胞繪製在上層，體驗更佳
     renderCells.sort((a, b) => a.mass - b.mass);
 
     renderCells.forEach(c => {
@@ -744,7 +749,6 @@ function render() {
 }
 requestAnimationFrame(render);
 
-// 記錄滑鼠當前螢幕位置
 window.addEventListener('mousemove', (e) => {
     mouseScreenPos.x = e.clientX;
     mouseScreenPos.y = e.clientY;
@@ -811,8 +815,18 @@ function resetJoystick(e) {
 joyZone.addEventListener('touchend', resetJoystick);
 joyZone.addEventListener('touchcancel', resetJoystick);
 
-document.getElementById('btn-w').addEventListener('touchstart', (e) => { e.preventDefault(); localInput.eject = true; sendInput(true); });
-document.getElementById('btn-space').addEventListener('touchstart', (e) => { e.preventDefault(); localInput.split = true; sendInput(true); });
+document.getElementById('btn-w').addEventListener('touchstart', (e) => { 
+    e.preventDefault(); 
+    localInput.eject = true; 
+    sendInput(true); 
+    setTimeout(() => { localInput.eject = false; }, 50);
+});
+document.getElementById('btn-space').addEventListener('touchstart', (e) => { 
+    e.preventDefault(); 
+    localInput.split = true; 
+    sendInput(true); 
+    setTimeout(() => { localInput.split = false; }, 50);
+});
 
 function sendInput(force = false) {
     const now = Date.now();
@@ -826,8 +840,6 @@ function sendInput(force = false) {
             });
             lastSendTime = now;
         }
-        localInput.eject = false;
-        localInput.split = false;
     }
 }
 </script>
