@@ -148,7 +148,6 @@ const firebaseConfig = {
 firebase.initializeApp(firebaseConfig);
 const db = firebase.database();
 
-// 即時監聽各大廳分流人數
 const serverSelect = document.getElementById('server-select');
 ['1111', '2222', '3333'].forEach(serverCode => {
     db.ref(`servers/frgg_${serverCode}/players`).on('value', (snapshot) => {
@@ -361,8 +360,9 @@ function updateClientState(newState) {
             pNew.cells.forEach((cNew, idx) => {
                 let cOld = pOld.cells[idx];
                 if (cOld && typeof cOld.renderX === 'number' && typeof cOld.renderY === 'number') {
-                    cNew.renderX = cOld.renderX + (cNew.x - cOld.renderX) * 0.35;
-                    cNew.renderY = cOld.renderY + (cNew.y - cOld.renderY) * 0.35;
+                    // 優化位置插值係數，大幅減輕移動卡頓感
+                    cNew.renderX = cOld.renderX + (cNew.x - cOld.renderX) * 0.65;
+                    cNew.renderY = cOld.renderY + (cNew.y - cOld.renderY) * 0.65;
                 } else {
                     cNew.renderX = cNew.x; 
                     cNew.renderY = cNew.y;
@@ -420,7 +420,7 @@ function becomeHost(roomId) {
     });
 
     cleanUpTimers();
-    hostInterval = setInterval(updateHostLogic, 1000 / 30);
+    hostInterval = setInterval(updateHostLogic, 1000 / 45); // 提升伺服器物理更新率至 45 fps 增進流暢度
 }
 
 function removePlayer(pId) {
@@ -573,8 +573,8 @@ function updateHostLogic() {
             cell.x = Math.max(radius + 10, Math.min(WORLD_SIZE - radius - 10, cell.x));
             cell.y = Math.max(radius + 10, Math.min(WORLD_SIZE - radius - 10, cell.y));
 
-            cell.renderX = cell.renderX ? cell.renderX + (cell.x - cell.renderX) * 0.4 : cell.x;
-            cell.renderY = cell.renderY ? cell.renderY + (cell.y - cell.renderY) * 0.4 : cell.y;
+            cell.renderX = cell.renderX ? cell.renderX + (cell.x - cell.renderX) * 0.6 : cell.x;
+            cell.renderY = cell.renderY ? cell.renderY + (cell.y - cell.renderY) * 0.6 : cell.y;
             
             if (cell.squish && cell.squish > 1) cell.squish += (1 - cell.squish) * 0.1;
 
@@ -785,9 +785,9 @@ function render() {
         updateHUD(totalMass);
 
         let targetScale = Math.max(0.25, 1 - (Math.sqrt(totalMass) * 0.0028));
-        camera.scale += (targetScale - camera.scale) * 0.06;
-        camera.x += (avgX - camera.x) * 0.08;
-        camera.y += (avgY - camera.y) * 0.08;
+        camera.scale += (targetScale - camera.scale) * 0.08;
+        camera.x += (avgX - camera.x) * 0.12;
+        camera.y += (avgY - camera.y) * 0.12;
     }
 
     ctx.save();
@@ -986,7 +986,7 @@ document.getElementById('btn-space').addEventListener('touchstart', (e) => { e.p
 
 function sendInput(force = false) {
     const now = Date.now();
-    if (force || now - lastSendTime > 30) {
+    if (force || now - lastSendTime > 15) { // 提高輸入發送頻率 (從 30ms 縮短至 15ms) 讓操作更即時
         if (!isHost && conn && conn.open) {
             conn.send({ type: 'INPUT', input: localInput });
             lastSendTime = now;
