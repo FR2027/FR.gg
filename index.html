@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>FR.gg v26.5 伺服器方案</title>
+    <title>FR.gg</title>
     <link rel="icon" type="image/jpeg" href="https://i.ibb.co/cXZ9bzt5/FR-gg.jpg">
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; touch-action: none; }
@@ -49,7 +49,7 @@
         #leaderboard {
             position: absolute; top: 16px; right: 16px; z-index: 5;
             background: rgba(0, 0, 0, 0.4); border: 1px solid rgba(255, 255, 255, 0.1);
-            padding: 12px 16px; border-radius: 12px; color: white; width: 160px;
+            padding: 12px 16px; border-radius: 12px; color: white; width: 175px;
             backdrop-filter: blur(8px); pointer-events: none;
         }
         #leaderboard h3 { font-size: 13px; letter-spacing: 1.5px; color: #00f2fe; margin-bottom: 8px; text-align: center; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 5px; }
@@ -80,7 +80,8 @@
             #joystick-zone, #mobile-controls { display: none !important; }
         }
     </style>
-    <!-- 引入 Firebase v8 SDK -->
+    <!-- 引入 PeerJS 與 Firebase v8 SDK -->
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
 </head>
@@ -151,6 +152,7 @@ const serverSelect = document.getElementById('server-select');
     db.ref(`servers/frgg_${serverCode}/players`).on('value', (snapshot) => {
         const players = snapshot.val() || {};
         const count = Object.keys(players).length;
+        
         for (let i = 0; i < serverSelect.options.length; i++) {
             if (serverSelect.options[i].value === serverCode) {
                 const baseName = serverCode === '1111' ? '主分流伺服器🔥' : `第${serverCode[0]}分流伺服器`;
@@ -163,11 +165,25 @@ const serverSelect = document.getElementById('server-select');
 document.addEventListener('gesturestart', e => e.preventDefault());
 document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
 
+const GAME_SIG = "FR_GG_V4_FIXED";
 const WORLD_SIZE = 5000;
 const PADDING = 50;
 const RADIUS_SCALE = 3.6;
 const RECOMBINE_TIME = 18000;
-const MAX_FOODS = 400;
+const MAX_FOODS = 650;
+
+const PEER_CONFIG = {
+    debug: 1,
+    config: {
+        iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'stun:global.stun.twilio.com:3478' },
+            { urls: 'turn:openrelay.metered.ca:80', username: 'openrelay', credential: 'openrelay' },
+            { urls: 'turn:openrelay.metered.ca:443', username: 'openrelay', credential: 'openrelay' }
+        ]
+    }
+};
 
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
@@ -185,23 +201,29 @@ function resizeCanvas() {
 window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
 
+let peer = null, conn = null, isHost = false;
 let myName = "未命名玩家";
 let myId = 'p_' + Math.random().toString(36).substring(2, 9);
 let currentRoomId = '';
 let currentServerCode = '';
-let isHost = false;
 
 let gameState = { players: {}, foods: [], viruses: [], ejected: [] };
 let playerOrder = [];
 let localInput = { angle: 0, speed: 0, split: false, eject: false };
 let lastSendTime = 0;
+
 let hostInterval = null;
-let stateListener = null;
+let heartbeatInterval = null;
 
 let isPageVisible = true;
 document.addEventListener('visibilitychange', () => {
     isPageVisible = !document.hidden;
 });
+
+function cleanUpTimers() {
+    if (hostInterval) { clearInterval(hostInterval); hostInterval = null; }
+    if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null; }
+}
 
 function setStatus(msg) {
     document.getElementById('status-msg').innerText = msg;
@@ -213,130 +235,294 @@ function connectToServer() {
     currentRoomId = 'frgg_' + currentServerCode;
 
     document.getElementById('start-btn').disabled = true;
-    setStatus("正在連接伺服器分流...");
+    setStatus("正在檢查伺服器狀態...");
 
-    const roomHostRef = db.ref(`servers/${currentRoomId}/hostId`);
-    const playerRef = db.ref(`servers/${currentRoomId}/players/${myId}`);
+    cleanUpTimers();
+    if (peer) { try { peer.destroy(); } catch(e){} peer = null; }
 
-    playerRef.onDisconnect().remove();
+    const hostRef = db.ref(`servers/${currentRoomId}/hostId`);
+    const playerPresenceRef = db.ref(`servers/${currentRoomId}/players/${myId}`);
 
-    roomHostRef.transaction((currentHost) => {
-        if (!currentHost) {
-            return myId;
-        }
-        return currentHost;
-    }, (error, committed, snapshot) => {
-        if (error) {
-            setStatus("連線伺服器發生錯誤");
-            document.getElementById('start-btn').disabled = false;
-            return;
-        }
+    playerPresenceRef.onDisconnect().remove();
+    playerPresenceRef.set({ name: myName, joinedAt: firebase.database.ServerValue.TIMESTAMP });
 
-        const hostId = snapshot.val();
-        isHost = (hostId === myId);
-
-        // 建立本地玩家初始角色
-        const initialPlayerData = {
-            id: myId,
-            name: myName,
-            color: `hsl(${Math.random() * 360}, 80%, 55%)`,
-            cells: [{
-                x: Math.random() * (WORLD_SIZE - PADDING * 2) + PADDING,
-                y: Math.random() * (WORLD_SIZE - PADDING * 2) + PADDING,
-                mass: 20, vx: 0, vy: 0, splitTime: 0, squish: 1
-            }],
-            input: { angle: 0, speed: 0, split: false, eject: false },
-            lastSeen: Date.now()
-        };
-
-        playerRef.set(initialPlayerData);
-
-        if (isHost) {
-            setStatus("您已成為伺服器主機，初始化世界中...");
-            initHostWorld();
+    hostRef.once('value', (snapshot) => {
+        let existingHostId = snapshot.val();
+        if (!existingHostId) {
+            claimHostAndStart(currentRoomId);
         } else {
-            setStatus("成功連線至伺服器！");
+            tryConnectToHost(existingHostId);
         }
+    });
+}
 
+function claimHostAndStart(roomId) {
+    isHost = true;
+    myId = roomId;
+    setStatus("分流伺服器建立中...");
+
+    const hostRef = db.ref(`servers/${roomId}/hostId`);
+    hostRef.set(myId);
+    hostRef.onDisconnect().remove();
+
+    db.ref(`servers/${roomId}/players/${myId}`).set({ name: myName, joinedAt: firebase.database.ServerValue.TIMESTAMP });
+    db.ref(`servers/${roomId}/players/${myId}`).onDisconnect().remove();
+
+    peer = new Peer(myId, PEER_CONFIG);
+
+    peer.on('open', () => {
+        setStatus("伺服器建立成功！");
+        becomeHost(roomId);
+        setTimeout(() => {
+            document.getElementById('lobby').style.display = 'none';
+            document.getElementById('start-btn').disabled = false;
+        }, 500);
+    });
+
+    peer.on('error', (err) => {
+        if (err.type === 'unavailable-id') {
+            isHost = false;
+            myId = 'p_' + Math.random().toString(36).substring(2, 9);
+            peer = new Peer(myId, PEER_CONFIG);
+            peer.on('open', () => tryConnectToHost(roomId));
+        } else {
+            setStatus("伺服器錯誤: " + err.type);
+            document.getElementById('start-btn').disabled = false;
+        }
+    });
+}
+
+function tryConnectToHost(hostId) {
+    isHost = false;
+    setStatus(`正在連線至主機 (${hostId})...`);
+
+    peer = new Peer(myId, PEER_CONFIG);
+
+    peer.on('open', () => {
+        conn = peer.connect(hostId, { metadata: { signature: GAME_SIG, clientName: myName }, reliable: true });
+        setupClientConn(conn, hostId);
+    });
+
+    peer.on('error', () => {
+        setStatus("無法連線至房機，切換為自行建立伺服器...");
+        claimHostAndStart(currentRoomId);
+    });
+}
+
+function setupClientConn(c) {
+    let connectTimeout = setTimeout(() => {
+        if (!c || !c.open) {
+            setStatus("連線超時，嘗試切換為伺服器...");
+            claimHostAndStart(currentRoomId);
+        }
+    }, 5000);
+
+    c.on('open', () => {
+        clearTimeout(connectTimeout);
+        setStatus("成功加入遊戲！");
+        c.send({ type: 'JOIN', name: myName });
         document.getElementById('lobby').style.display = 'none';
         document.getElementById('start-btn').disabled = false;
 
-        startSyncListener();
+        heartbeatInterval = setInterval(() => {
+            if (c && c.open) c.send({ type: 'PING' });
+        }, 1500);
     });
+
+    c.on('data', (data) => {
+        if (data.type === 'STATE') {
+            updateClientState(data.state);
+            if (data.playerOrder) playerOrder = data.playerOrder;
+        }
+    });
+
+    c.on('close', () => handleHostDisconnect());
+    c.on('error', () => handleHostDisconnect());
 }
 
-function initHostWorld() {
-    const worldRef = db.ref(`servers/${currentRoomId}/worldState`);
-    worldRef.once('value', (snapshot) => {
-        let val = snapshot.val();
-        if (!val || !val.foods || val.foods.length === 0) {
-            let initialFoods = [];
-            let initialViruses = [];
-            for (let i = 0; i < MAX_FOODS; i++) initialFoods.push(createFood());
-            for (let i = 0; i < 15; i++) initialViruses.push(createVirus());
-            
-            worldRef.set({
-                foods: initialFoods,
-                viruses: initialViruses,
-                ejected: []
+function handleHostDisconnect() {
+    if (isHost) return;
+    setStatus("連線逾時，正在自動連接分流伺服器...");
+    cleanUpTimers();
+    if (peer) { try { peer.destroy(); } catch(e){} }
+    
+    setTimeout(() => {
+        claimHostAndStart(currentRoomId);
+    }, 1000);
+}
+
+function updateClientState(newState) {
+    Object.keys(newState.players || {}).forEach(pId => {
+        let pNew = newState.players[pId];
+        let pOld = gameState.players ? gameState.players[pId] : null;
+        if (pOld && pOld.cells) {
+            pNew.cells.forEach((cNew, idx) => {
+                let cOld = pOld.cells[idx];
+                if (cOld && typeof cOld.renderX === 'number' && typeof cOld.renderY === 'number') {
+                    cNew.renderX = cOld.renderX + (cNew.x - cOld.renderX) * 0.65;
+                    cNew.renderY = cOld.renderY + (cNew.y - cOld.renderY) * 0.65;
+                } else {
+                    cNew.renderX = cNew.x; 
+                    cNew.renderY = cNew.y;
+                }
             });
+        } else {
+            pNew.cells.forEach(cNew => { cNew.renderX = cNew.x; cNew.renderY = cNew.y; });
         }
     });
 
-    if (hostInterval) clearInterval(hostInterval);
-    hostInterval = setInterval(updateServerPhysics, 1000 / 25);
+    gameState = {
+        players: newState.players || {},
+        foods: newState.foods || [],
+        viruses: newState.viruses || [],
+        ejected: newState.ejected || []
+    };
 }
 
-function startSyncListener() {
-    if (stateListener) {
-        db.ref(`servers/${currentRoomId}`).off('value', stateListener);
+function becomeHost(roomId) {
+    isHost = true;
+    myId = roomId;
+
+    if (!gameState.foods || gameState.foods.length === 0) {
+        gameState.foods = [];
+        gameState.viruses = [];
+        gameState.ejected = [];
+        for (let i = 0; i < MAX_FOODS; i++) gameState.foods.push(createFood());
+        for (let i = 0; i < 20; i++) gameState.viruses.push(createVirus());
     }
 
-    stateListener = db.ref(`servers/${currentRoomId}`).on('value', (snapshot) => {
-        const data = snapshot.val();
-        if (!data) return;
+    if (!playerOrder.includes(myId)) playerOrder.unshift(myId);
+    gameState.players[myId] = gameState.players[myId] || createPlayer(myId, myName);
 
-        gameState.players = data.players || {};
-        gameState.foods = (data.worldState && data.worldState.foods) || [];
-        gameState.viruses = (data.worldState && data.worldState.viruses) || [];
-        gameState.ejected = (data.worldState && data.worldState.ejected) || [];
+    peer.on('connection', (c) => {
+        if (!c.metadata || c.metadata.signature !== GAME_SIG) { c.close(); return; }
 
-        playerOrder = Object.values(gameState.players)
-            .map(p => ({ id: p.id, totalMass: (p.cells || []).reduce((s, c) => s + c.mass, 0) }))
-            .sort((a, b) => b.totalMass - a.totalMass)
-            .map(p => p.id);
+        c.on('data', (data) => {
+            if (data.type === 'PING') {
+                if (gameState.players[c.peer]) gameState.players[c.peer].lastSeen = Date.now();
+                return;
+            }
+            if (gameState.players[c.peer]) gameState.players[c.peer].lastSeen = Date.now();
 
-        let me = gameState.players[myId];
-        if (!me && document.getElementById('lobby').style.display === 'none' && document.getElementById('gameover').style.display === 'none') {
-            triggerGameOver(0);
-        }
+            if (data.type === 'JOIN' || data.type === 'RESPAWN') {
+                gameState.players[c.peer] = createPlayer(c.peer, data.name || c.metadata.clientName);
+                if (!playerOrder.includes(c.peer)) playerOrder.push(c.peer);
+            }
+            if (data.type === 'INPUT' && gameState.players[c.peer]) {
+                gameState.players[c.peer].input = data.input;
+            }
+        });
+
+        c.on('close', () => removePlayer(c.peer));
+        c.on('error', () => removePlayer(c.peer));
     });
+
+    cleanUpTimers();
+    hostInterval = setInterval(updateHostLogic, 1000 / 45);
 }
 
-function updateServerPhysics() {
-    if (!isHost) return;
+function removePlayer(pId) {
+    delete gameState.players[pId];
+    playerOrder = playerOrder.filter(id => id !== pId);
+    if (currentRoomId) {
+        db.ref(`servers/${currentRoomId}/players/${pId}`).remove();
+    }
+}
+
+function respawn() {
+    document.getElementById('gameover').style.display = 'none';
+    if (isHost) {
+        gameState.players[myId] = createPlayer(myId, myName);
+    } else if (conn && conn.open) {
+        conn.send({ type: 'RESPAWN', name: myName });
+    }
+}
+
+function returnToLobby() {
+    document.getElementById('gameover').style.display = 'none';
+    document.getElementById('lobby').style.display = 'flex';
+    document.getElementById('start-btn').disabled = false;
+    setStatus("");
+    
+    if (currentRoomId && myId) {
+        db.ref(`servers/${currentRoomId}/players/${myId}`).remove();
+        if (isHost) {
+            db.ref(`servers/${currentRoomId}/hostId`).remove();
+        }
+    }
+
+    cleanUpTimers();
+    isHost = false;
+    if (peer) peer.destroy();
+}
+
+function createPlayer(id, name) {
+    return {
+        id, name,
+        color: `hsl(${Math.random() * 360}, 80%, 55%)`,
+        cells: [{
+            x: Math.random() * (WORLD_SIZE - PADDING * 2) + PADDING,
+            y: Math.random() * (WORLD_SIZE - PADDING * 2) + PADDING,
+            renderX: 0, renderY: 0,
+            mass: 20, vx: 0, vy: 0, splitTime: 0, squish: 1
+        }],
+        input: { angle: 0, speed: 0, split: false, eject: false },
+        lastSeen: Date.now()
+    };
+}
+
+function createFood() {
+    return {
+        x: Math.random() * (WORLD_SIZE - PADDING * 2) + PADDING,
+        y: Math.random() * (WORLD_SIZE - PADDING * 2) + PADDING,
+        color: `hsl(${Math.random() * 360}, 85%, 60%)`
+    };
+}
+
+function createVirus() {
+    return {
+        x: Math.random() * (WORLD_SIZE - PADDING * 4) + PADDING * 2,
+        y: Math.random() * (WORLD_SIZE - PADDING * 4) + PADDING * 2,
+        radius: 48, mass: 100
+    };
+}
+
+function addParticles(x, y, color, count = 8) {
+    for (let i = 0; i < count; i++) {
+        let ang = Math.random() * Math.PI * 2;
+        let spd = Math.random() * 5 + 2;
+        particles.push({
+            x, y, vx: Math.cos(ang) * spd, vy: Math.sin(ang) * spd,
+            life: 1.0, color, size: Math.random() * 3 + 2
+        });
+    }
+}
+
+function updateHostLogic() {
     const now = Date.now();
-    let players = gameState.players || {};
-    let foods = gameState.foods || [];
-    let viruses = gameState.viruses || [];
-    let ejected = gameState.ejected || [];
 
-    if (foods.length < MAX_FOODS) {
-        let diff = MAX_FOODS - foods.length;
-        for (let i = 0; i < diff; i++) foods.push(createFood());
+    if (gameState.foods.length < MAX_FOODS) {
+        let diff = MAX_FOODS - gameState.foods.length;
+        for (let i = 0; i < diff; i++) {
+            gameState.foods.push(createFood());
+        }
     }
 
-    Object.keys(players).forEach(pId => {
-        let p = players[pId];
-        if (!p || !p.cells) return;
-        let input = p.input || { angle: 0, speed: 0, split: false, eject: false };
+    Object.keys(gameState.players).forEach(pId => {
+        if (pId !== myId && now - gameState.players[pId].lastSeen > 15000) {
+            removePlayer(pId);
+        }
+    });
 
-        if (input.eject && now - (p.lastEject || 0) > 100) {
+    Object.values(gameState.players).forEach(p => {
+        let input = (p.id === myId) ? localInput : p.input;
+
+        if (input.eject && now - (p.lastEject || 0) > 80) {
             p.cells.forEach(cell => {
                 if (cell.mass >= 32) {
                     cell.mass -= 13;
                     let r = Math.sqrt(cell.mass) * RADIUS_SCALE;
-                    ejected.push({
+                    gameState.ejected.push({
                         x: cell.x + Math.cos(input.angle) * (r + 10),
                         y: cell.y + Math.sin(input.angle) * (r + 10),
                         angle: input.angle, speed: 20, mass: 12, color: p.color
@@ -356,7 +542,7 @@ function updateServerPhysics() {
                         cell.mass /= 2;
                         cell.squish = 1.35;
                         newCells.push({
-                            x: cell.x, y: cell.y,
+                            x: cell.x, y: cell.y, renderX: cell.x, renderY: cell.y,
                             mass: cell.mass,
                             vx: Math.cos(input.angle) * 24, vy: Math.sin(input.angle) * 24,
                             splitTime: now, squish: 1.35
@@ -370,8 +556,9 @@ function updateServerPhysics() {
         }
 
         let addedCells = [];
-        p.cells.forEach(cell => {
+        p.cells.forEach((cell) => {
             if (cell.mass > 20) cell.mass -= 0.002;
+
             let radius = Math.sqrt(cell.mass) * RADIUS_SCALE;
             let speed = Math.max(1.6, 9 - (radius * 0.032)) * (input.speed || 0);
 
@@ -384,29 +571,81 @@ function updateServerPhysics() {
             cell.x = Math.max(radius + 10, Math.min(WORLD_SIZE - radius - 10, cell.x));
             cell.y = Math.max(radius + 10, Math.min(WORLD_SIZE - radius - 10, cell.y));
 
+            cell.renderX = cell.renderX ? cell.renderX + (cell.x - cell.renderX) * 0.6 : cell.x;
+            cell.renderY = cell.renderY ? cell.renderY + (cell.y - cell.renderY) * 0.6 : cell.y;
+            
             if (cell.squish && cell.squish > 1) cell.squish += (1 - cell.squish) * 0.1;
 
-            for (let i = foods.length - 1; i >= 0; i--) {
-                let f = foods[i];
+            for (let i = gameState.foods.length - 1; i >= 0; i--) {
+                let f = gameState.foods[i];
                 if (Math.hypot(cell.x - f.x, cell.y - f.y) < radius) {
                     cell.mass += 1;
-                    foods.splice(i, 1);
+                    gameState.foods.splice(i, 1);
                 }
             }
             
-            for (let i = ejected.length - 1; i >= 0; i--) {
-                let e = ejected[i];
+            for (let i = gameState.ejected.length - 1; i >= 0; i--) {
+                let e = gameState.ejected[i];
                 if (Math.hypot(cell.x - e.x, cell.y - e.y) < radius) {
                     cell.mass += e.mass;
-                    ejected.splice(i, 1);
+                    gameState.ejected.splice(i, 1);
+                }
+            }
+
+            for (let i = 0; i < gameState.viruses.length; i++) {
+                let v = gameState.viruses[i];
+                if (cell.mass > v.radius && Math.hypot(cell.x - v.x, cell.y - v.y) < radius) {
+                    let maxAllowed = 16 - (p.cells.length + addedCells.length);
+                    if (maxAllowed > 0) {
+                        let targetPieces = Math.min(maxAllowed + 1, Math.floor(cell.mass / 18));
+                        if (targetPieces > 1) {
+                            let splitMass = cell.mass / targetPieces;
+                            cell.mass = splitMass;
+                            for (let k = 1; k < targetPieces; k++) {
+                                let a = (Math.PI * 2 / targetPieces) * k;
+                                addedCells.push({
+                                    x: cell.x, y: cell.y, renderX: cell.x, renderY: cell.y,
+                                    mass: splitMass, vx: Math.cos(a) * 20, vy: Math.sin(a) * 20,
+                                    splitTime: now, squish: 1.4
+                                });
+                            }
+                        }
+                    }
+                    gameState.viruses[i] = createVirus();
+                    addParticles(v.x, v.y, '#33ff33', 20);
+                    break;
                 }
             }
         });
 
         if (addedCells.length > 0) p.cells.push(...addedCells);
+
+        for (let i = 0; i < p.cells.length; i++) {
+            for (let j = i + 1; j < p.cells.length; j++) {
+                let c1 = p.cells[i], c2 = p.cells[j];
+                let dist = Math.hypot(c1.x - c2.x, c1.y - c2.y);
+                let r1 = Math.sqrt(c1.mass) * RADIUS_SCALE, r2 = Math.sqrt(c2.mass) * RADIUS_SCALE;
+                let minDist = r1 + r2;
+
+                if (now - c1.splitTime > RECOMBINE_TIME && now - c2.splitTime > RECOMBINE_TIME) {
+                    if (dist < r1) {
+                        c1.mass += c2.mass;
+                        c1.squish = 1.2;
+                        p.cells.splice(j, 1);
+                        j--;
+                    }
+                } else if (dist < minDist && dist > 0) {
+                    let overlap = minDist - dist;
+                    let nx = (c1.x - c2.x) / dist;
+                    let ny = (c1.y - c2.y) / dist;
+                    c1.x += nx * overlap * 0.15; c1.y += ny * overlap * 0.15;
+                    c2.x -= nx * overlap * 0.15; c2.y -= ny * overlap * 0.15;
+                }
+            }
+        }
     });
 
-    ejected.forEach(e => {
+    gameState.ejected.forEach(e => {
         if (e.speed > 0.1) {
             e.x += Math.cos(e.angle) * e.speed;
             e.y += Math.sin(e.angle) * e.speed;
@@ -416,67 +655,56 @@ function updateServerPhysics() {
         }
     });
 
-    // 寫回 Firebase 資料庫同步給所有人
-    db.ref(`servers/${currentRoomId}/worldState`).set({ foods, viruses, ejected });
-    db.ref(`servers/${currentRoomId}/players`).set(players);
-}
+    let allPlayers = Object.values(gameState.players);
+    for (let i = 0; i < allPlayers.length; i++) {
+        for (let j = 0; j < allPlayers.length; j++) {
+            if (i === j) continue;
+            let p1 = allPlayers[i], p2 = allPlayers[j];
 
-function createFood() {
-    return {
-        x: Math.random() * (WORLD_SIZE - PADDING * 2) + PADDING,
-        y: Math.random() * (WORLD_SIZE - PADDING * 2) + PADDING,
-        color: `hsl(${Math.random() * 360}, 85%, 60%)`
-    };
-}
-
-function createVirus() {
-    return {
-        x: Math.random() * (WORLD_SIZE - PADDING * 4) + PADDING * 2,
-        y: Math.random() * (WORLD_SIZE - PADDING * 4) + PADDING * 2,
-        radius: 48, mass: 100
-    };
-}
-
-function respawn() {
-    document.getElementById('gameover').style.display = 'none';
-    const playerRef = db.ref(`servers/${currentRoomId}/players/${myId}`);
-    playerRef.set({
-        id: myId,
-        name: myName,
-        color: `hsl(${Math.random() * 360}, 80%, 55%)`,
-        cells: [{
-            x: Math.random() * (WORLD_SIZE - PADDING * 2) + PADDING,
-            y: Math.random() * (WORLD_SIZE - PADDING * 2) + PADDING,
-            mass: 20, vx: 0, vy: 0, splitTime: 0, squish: 1
-        }],
-        input: { angle: 0, speed: 0, split: false, eject: false },
-        lastSeen: Date.now()
-    });
-}
-
-function returnToLobby() {
-    document.getElementById('gameover').style.display = 'none';
-    document.getElementById('lobby').style.display = 'flex';
-    document.getElementById('start-btn').disabled = false;
-    setStatus("");
-    
-    if (currentRoomId && myId) {
-        db.ref(`servers/${currentRoomId}/players/${myId}`).remove();
-        if (isHost) {
-            db.ref(`servers/${currentRoomId}/hostId`).remove();
+            p1.cells.forEach(c1 => {
+                for (let k = p2.cells.length - 1; k >= 0; k--) {
+                    let c2 = p2.cells[k];
+                    if (c1.mass >= c2.mass * 1.12) {
+                        let r1 = Math.sqrt(c1.mass) * RADIUS_SCALE;
+                        let r2 = Math.sqrt(c2.mass) * RADIUS_SCALE;
+                        let dist = Math.hypot(c1.x - c2.x, c1.y - c2.y);
+                        
+                        if (dist < r1 - r2 * 0.35 || dist < r1 * 0.6) {
+                            c1.mass += c2.mass;
+                            c1.squish = 1.25;
+                            addParticles(c2.x, c2.y, p2.color, 16);
+                            p2.cells.splice(k, 1);
+                        }
+                    }
+                }
+            });
         }
     }
-    if (stateListener) {
-        db.ref(`servers/${currentRoomId}`).off('value', stateListener);
+
+    Object.keys(gameState.players).forEach(pId => {
+        let p = gameState.players[pId];
+        if (p.cells && p.cells.length > 0) {
+            p.lastScore = p.cells.reduce((sum, c) => sum + c.mass, 0);
+        } else {
+            if (pId === myId && document.getElementById('gameover').style.display !== 'flex') {
+                triggerGameOver(p.lastScore || 0);
+            }
+            removePlayer(pId);
+        }
+    });
+
+    if (peer && peer.connections) {
+        Object.keys(peer.connections).forEach(pId => {
+            peer.connections[pId].forEach(c => {
+                if (c && c.open) c.send({ type: 'STATE', state: gameState, playerOrder });
+            });
+        });
     }
-    if (hostInterval) clearInterval(hostInterval);
-    isHost = false;
 }
 
 function triggerGameOver(score) {
     document.getElementById('final-score').innerText = Math.floor(score);
     document.getElementById('gameover').style.display = 'flex';
-    db.ref(`servers/${currentRoomId}/players/${myId}`).remove();
 }
 
 function drawBackground() {
@@ -520,17 +748,37 @@ function drawVirus(x, y, radius) {
     ctx.restore();
 }
 
+function updateHUD(totalMass) {
+    document.getElementById('hud-mass').innerText = Math.floor(totalMass);
+}
+
+// [已修復] 排行榜計算與渲染邏輯
 function updateLeaderboard() {
     const listEl = document.getElementById('rank-list');
-    const sorted = Object.values(gameState.players || {}).map(p => ({
-        id: p.id, name: p.name,
-        totalMass: (p.cells || []).reduce((sum, c) => sum + c.mass, 0)
-    })).sort((a, b) => b.totalMass - a.totalMass).slice(0, 5);
+    if (!gameState.players) return;
+
+    const sorted = Object.values(gameState.players).map(p => {
+        let totalMass = 0;
+        if (p.cells && Array.isArray(p.cells)) {
+            totalMass = p.cells.reduce((sum, c) => sum + (c.mass || 0), 0);
+        }
+        return {
+            id: p.id,
+            name: p.name || '未命名玩家',
+            totalMass: totalMass
+        };
+    }).sort((a, b) => b.totalMass - a.totalMass).slice(0, 5);
 
     let html = '';
     sorted.forEach((p, i) => {
-        html += `<li class="${p.id === myId ? 'me' : ''}"><span>${i + 1}. ${p.name}</span><span>${Math.floor(p.totalMass)}</span></li>`;
+        let displayName = p.name.length > 6 ? p.name.substring(0, 6) + '..' : p.name;
+        html += `<li class="${p.id === myId ? 'me' : ''}"><span>${i + 1}. ${displayName}</span><span>${Math.floor(p.totalMass)}</span></li>`;
     });
+    
+    if (sorted.length === 0) {
+        html = `<li style="text-align:center; color:#8a99ad;">暫無玩家</li>`;
+    }
+
     listEl.innerHTML = html;
 }
 
@@ -544,11 +792,11 @@ function render() {
 
     let me = gameState.players ? gameState.players[myId] : null;
     if (me && me.cells && me.cells.length > 0) {
-        let avgX = me.cells.reduce((sum, c) => sum + c.x, 0) / me.cells.length;
-        let avgY = me.cells.reduce((sum, c) => sum + c.y, 0) / me.cells.length;
+        let avgX = me.cells.reduce((sum, c) => sum + (c.renderX || c.x), 0) / me.cells.length;
+        let avgY = me.cells.reduce((sum, c) => sum + (c.renderY || c.y), 0) / me.cells.length;
         let totalMass = me.cells.reduce((sum, c) => sum + c.mass, 0);
 
-        document.getElementById('hud-mass').innerText = Math.floor(totalMass);
+        updateHUD(totalMass);
 
         let targetScale = Math.max(0.25, 1 - (Math.sqrt(totalMass) * 0.0028));
         camera.scale += (targetScale - camera.scale) * 0.08;
@@ -558,6 +806,7 @@ function render() {
 
     ctx.save();
     ctx.scale(dpr, dpr);
+
     ctx.translate(window.innerWidth / 2, window.innerHeight / 2);
     ctx.scale(camera.scale, camera.scale);
     ctx.translate(-camera.x, -camera.y);
@@ -599,6 +848,17 @@ function render() {
         });
     }
 
+    for (let i = particles.length - 1; i >= 0; i--) {
+        let pt = particles[i];
+        ctx.fillStyle = pt.color;
+        ctx.globalAlpha = pt.life;
+        ctx.beginPath(); ctx.arc(pt.x, pt.y, pt.size, 0, Math.PI * 2); ctx.fill();
+        pt.x += pt.vx; pt.y += pt.vy;
+        pt.life -= 0.03;
+        if (pt.life <= 0) particles.splice(i, 1);
+    }
+    ctx.globalAlpha = 1.0;
+
     let renderCells = [];
     if (gameState.players) {
         Object.values(gameState.players).forEach(p => {
@@ -610,12 +870,14 @@ function render() {
     renderCells.sort((a, b) => a.mass - b.mass);
 
     renderCells.forEach(c => {
+        let rx = c.renderX || c.x;
+        let ry = c.renderY || c.y;
         let r = Math.sqrt(c.mass) * RADIUS_SCALE;
         let sq = c.squish || 1;
 
-        if (Math.abs(c.x - camera.x) < viewW + r && Math.abs(c.y - camera.y) < viewH + r) {
+        if (Math.abs(rx - camera.x) < viewW + r && Math.abs(ry - camera.y) < viewH + r) {
             ctx.save();
-            ctx.translate(c.x, c.y);
+            ctx.translate(rx, ry);
             ctx.scale(sq, 1 / sq);
 
             ctx.fillStyle = c.color;
@@ -651,10 +913,14 @@ function render() {
 requestAnimationFrame(render);
 
 window.addEventListener('mousemove', (e) => {
+    mousePos.x = e.clientX;
+    mousePos.y = e.clientY;
+
     let me = gameState.players ? gameState.players[myId] : null;
     if (me && me.cells && me.cells.length > 0) {
         let screenCenterX = window.innerWidth / 2;
         let screenCenterY = window.innerHeight / 2;
+        
         let dx = e.clientX - screenCenterX;
         let dy = e.clientY - screenCenterY;
         let dist = Math.hypot(dx, dy);
@@ -734,9 +1000,9 @@ document.getElementById('btn-space').addEventListener('touchstart', (e) => { e.p
 
 function sendInput(force = false) {
     const now = Date.now();
-    if (force || now - lastSendTime > 50) {
-        if (currentRoomId && myId) {
-            db.ref(`servers/${currentRoomId}/players/${myId}/input`).set(localInput);
+    if (force || now - lastSendTime > 15) {
+        if (!isHost && conn && conn.open) {
+            conn.send({ type: 'INPUT', input: localInput });
             lastSendTime = now;
         }
         localInput.eject = false;
